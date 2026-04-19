@@ -29,10 +29,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
   }
 
+  // Level-specific guidance — includes both grammar/vocab complexity AND
+  // speech-pace hints. Beginner dialogs should be slower + more pauses so
+  // subtitles are readable on a 15s TikTok-style card; advanced can run at
+  // normal conversational speed. Keep word counts calibrated to be
+  // comfortable at the stated pace, not cramming.
   const levelGuidance: Record<string, string> = {
-    beginner: "Use very simple grammar, basic vocabulary (A1-A2), short sentences. Pick TPs that focus on foundational concepts.",
-    intermediate: "Use moderate complexity (B1-B2), common idiomatic expressions allowed. Pick TPs that build on basics.",
-    advanced: "Use nuanced language (C1-C2), idioms, phrasal verbs, subtle distinctions. Pick TPs that challenge fluency.",
+    beginner:
+      "Use very simple grammar, basic vocabulary (A1-A2), short sentences. Pick TPs that focus on foundational concepts. Keep the dialog sparse and slow: clear enunciation, natural half-beat pauses between lines, characters are relaxed.",
+    intermediate:
+      "Use moderate complexity (B1-B2), common idiomatic expressions allowed. Pick TPs that build on basics. Dialog flows at a natural conversational pace with a small pause only where it fits the scene (e.g. a surprise, a sip of coffee).",
+    advanced:
+      "Use nuanced language (C1-C2), idioms, phrasal verbs, subtle distinctions. Pick TPs that challenge fluency. Dialog runs at normal everyday speed — the kind of back-and-forth native speakers have without waiting for each other.",
+  };
+
+  // Calibrated word budgets per level. These are what actually fits
+  // comfortably at the above pace in 15 seconds without cramming subtitles.
+  // Do NOT cheat by cranking up density — the video is for LEARNERS.
+  const wordBudget: Record<string, string> = {
+    beginner:     "20-28 English words total, max 4 turns (2 lines per speaker). Keep sentences 4-7 words each.",
+    intermediate: "28-38 English words total, max 4 turns (2 lines per speaker). Sentences can be 5-12 words.",
+    advanced:     "35-45 English words total, max 4 turns (2 lines per speaker). Sentences can be 8-15 words.",
   };
 
   const prompt = `You are a content planner for TikTalk, a social-media style language learning app that teaches English through 15-second AI-generated video scenes. Users scroll a TikTok-like feed and learn English passively/actively.
@@ -64,17 +81,24 @@ IMPORTANT: Prefer TPs with fewer existing videos (lower usage count). TPs with 0
 
 HARD CONSTRAINTS for the scene:
 - Exactly 2 speakers (no monologues, no crowds)
-- Total dialogue: 25-40 English words (must fit 15 seconds of natural speech)
-- Maximum 4 dialogue turns (2 lines per speaker)
+- Dialog length for "${level}": ${wordBudget[level] || wordBudget.beginner}
 - Real-world everyday scenario matching the channel + vibes
-- Dialogue must naturally use the selected TPs — don't shoehorn
+- Dialog must naturally use the selected TPs — don't shoehorn, don't pad
 - Level-appropriate vocabulary (see LEVEL GUIDANCE above)
+- Every line must be comfortably readable as a subtitle in the time it takes
+  the actor to say it. If the subtitle would need to rush past, shorten the
+  line. "Fewer, clearer" beats "more, crammed" for a learner app.
 
 Seedance prompt should include:
 - Scene setting (location, lighting, mood)
 - Both characters with brief descriptions (who they are — e.g., "a tired barista", "a curious tourist")
 - Camera direction (medium shot, close-up, etc.)
-- Embedded dialogue with clear speaker labels:
+- **Speech pace directive** — embed one of these phrases into the prompt so
+  Seedance generates voice-over at the right speed:
+   * beginner     → "The characters speak clearly and slowly, with a natural half-beat pause between each line."
+   * intermediate → "The characters speak at a normal conversational pace, fluid but not rushed."
+   * advanced     → "The characters speak at a natural everyday pace — quick, overlapping rhythm typical of native speakers."
+- Embedded dialog with clear speaker labels:
   Character A: "line 1"
   Character B: "line 2"
 
@@ -84,8 +108,8 @@ Seedance prompt should include:
 
 {
   "selected_tp_ids": ["<uuid-1>", "<uuid-2>"],
-  "seedance_prompt": "Medium shot inside a warm, sunlit coffee shop in the morning. A cheerful young woman barista with an apron stands behind the counter. A tired male customer in a hoodie approaches. Natural lighting, cozy atmosphere.\\n\\nBarista: \\"Good morning! What can I get you?\\"\\nCustomer: \\"Can I have a large coffee, please?\\"\\nBarista: \\"Sure, anything else?\\"\\nCustomer: \\"No thanks, that's all.\\"",
-  "reasoning": "Seçilen TP'ler temel sipariş kalıplarını öğretiyor: 'Can I have...' isteme kalıbı ve 'anything else' açık uçlu sorusu. Sahne kahveci senaryosu, beginner seviyesi için ideal çünkü kelime basit ve kalıplar günlük hayatta sık kullanılıyor."
+  "seedance_prompt": "Medium shot inside a warm, sunlit coffee shop in the morning. A cheerful young woman barista with an apron stands behind the counter. A tired male customer in a hoodie approaches. Natural lighting, cozy atmosphere. The characters speak clearly and slowly, with a natural half-beat pause between each line.\\n\\nBarista: \\"Good morning! What can I get you?\\"\\nCustomer: \\"Can I have a large coffee, please?\\"\\nBarista: \\"Sure. Anything else?\\"\\nCustomer: \\"No thanks, that's all.\\"",
+  "reasoning": "Seçilen TP'ler temel sipariş kalıplarını öğretiyor: 'Can I have...' isteme kalıbı ve 'anything else' açık uçlu sorusu. Sahne kahveci senaryosu, beginner seviyesi için ideal — kelime basit, kalıplar günlük hayatta sık kullanılıyor, diyalog 23 kelime (beginner bütçesi 20-28) ve karakterler yavaş tonda konuştuğu için altyazı rahat okunuyor."
 }
 
 === YOUR OUTPUT ===
