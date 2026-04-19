@@ -361,30 +361,53 @@ Each section has:
 - title_en: Section title in English
 - body_en: Rich markdown for mobile display. Will be translated in phase 3.
 
-BODY MARKDOWN FORMAT — follow this structure consistently for every grammar section:
+BODY MARKDOWN FORMAT — produce **rich, visually scannable** markdown. iOS
+renders it with a full markdown engine (bold, italics, code spans, headings,
+blockquotes, bullets, numbered lists, tables, horizontal rules). Use all of
+these where they genuinely help — don't overuse. The learner should be able
+to skim and find what they need in under 3 seconds.
 
-**[Key term/pattern]** — one sentence explanation.
+Canonical grammar section template:
 
-**Pattern:** \`Subject + can + verb + object\`
+## [Key term or pattern]
 
-**From the video:**
-> *Speaker: "Exact quote from dialogue"*
+One-sentence explanation in plain language.
 
-**Examples:**
-- First example sentence
-- Second example sentence
+**Pattern:** \`Subject + should/shouldn't + verb (base)\`
 
-**Tip:** One practical usage tip or formality note.
+---
+
+### 💬 From the video
+> *Hacker: "You shouldn't buy those cheap parts."*
+
+### ✍️ Examples
+- You **should** back up your data every night.
+- He **shouldn't** use his neural-link while it's raining.
+
+### 💡 Tip
+Unlike many verbs, never add "to" — it's \`should go\`, **not** \`should to go\`.
 
 RULES for body_en:
-- ALWAYS use **bold** for key terms and section labels
-- ALWAYS use \`code spans\` for patterns/formulas
-- ALWAYS use > blockquotes for dialogue references from the video
-- ALWAYS use - bullet lists for examples (2-4 examples)
-- ALWAYS include a "From the video" blockquote referencing actual dialogue
-- ALWAYS end with a practical **Tip**
-- NEVER write plain wall-of-text paragraphs
-- Keep the same structure order across all sections for visual consistency
+- **Bold** for key terms (the target structure, verbs, prepositions).
+- *Italics* for secondary emphasis or meta ("literally translates as…").
+- \`code spans\` for patterns, formulas, ungrammatical examples.
+- Level-2 heading (\`##\`) at top with the term/pattern name.
+- Level-3 headings (\`###\`) with an emoji marker for each sub-section
+  (💬 from video, ✍️ examples, 💡 tip, ⚠️ watch out, ✅/❌ correct/wrong).
+- At least one \`---\` horizontal rule separating the opener from the
+  body sub-sections (visual breathing room on mobile).
+- Bullet lists (\`-\`) for examples (2-4 items); numbered lists (\`1.\`) for
+  step-by-step procedures.
+- Blockquotes (\`>\`) for any quote from the lesson dialog; quotes MUST be
+  verbatim and attributed to the speaker name.
+- Tables (\`| col | col |\`) for comparisons (e.g. should vs must vs have to,
+  past simple vs present perfect). Use when there are 3+ compared items.
+- NEVER write plain wall-of-text paragraphs — always break with lists,
+  quotes, or headings.
+- NEVER end with a bare sentence — always close with a **Tip**, **Warning**,
+  or callout subsection so the card has a visual endpoint.
+- Keep the same section order across all topics in a lesson for visual
+  consistency (opener → from video → examples → tip).
 
 COMMON_MISTAKES SECTION (optional, but strongly recommended for collocations and easily-confused patterns):
 - Use this when the teaching point has a typical L1-interference error that learners (especially Turkish speakers) make.
@@ -395,29 +418,45 @@ COMMON_MISTAKES SECTION (optional, but strongly recommended for collocations and
 - Title should be clear, e.g., "Common Mistakes: Make vs Do"
 - Body markdown format for common_mistakes:
 
-❌ **Wrong:** \`She did a decision.\`
-✅ **Correct:** \`She made a decision.\`
+## ⚠️ Make vs Do
 
-❌ **Wrong:** \`I did a mistake.\`
-✅ **Correct:** \`I made a mistake.\`
+Turkish speakers often say \`do\` where English wants \`make\`.
 
-**Why:** "Make" is used for decisions, mistakes, and plans — not "do".
+---
+
+### ❌ Wrong / ✅ Correct
+
+| Wrong | Correct |
+|---|---|
+| \`She did a decision.\` | She **made** a decision. |
+| \`I did a mistake.\` | I **made** a mistake. |
+
+### 💡 Why
+Use **make** for things you *create* (decisions, mistakes, plans,
+sandwiches). Use **do** for activities (do homework, do the dishes).
 
 - IMPORTANT: The wrong form MUST NEVER appear in the video dialogue itself — only in this info section as a warning. The scene shows only correct English.
 - If the teaching points in this video don't have a clear L1-interference pattern, SKIP this section entirely. Don't force it.
 
 CULTURAL / CONTEXTUAL_TRANSLATION section format:
 
-**[Cultural insight or translation note]** — one sentence hook.
+## 🌍 [Cultural insight or translation note]
 
-**In the video:**
+One-sentence hook of why this matters for a learner.
+
+---
+
+### 💬 In the video
 > *Speaker: "Relevant quote"*
 
-**What this means:** Explanation of cultural context, register, or why direct translation fails.
+### 📖 What this means
+Explanation of cultural context, register, or why direct translation fails.
+If it's a contextual_translation, include the native-language parallel
+phrase: *Turkish equivalent: "…"*
 
-**In practice:**
-- When/where this is commonly used
-- Social context or formality level
+### 🪧 In practice
+- When/where this is commonly used.
+- Social context or formality level.
 
 D) SPEAKING PROMPTS (exactly 3) matched to "${args.level}" level:
 1. prompt_type "repeat": A sentence from the video. Set expected_text to the exact sentence. prompt_text should instruct the user in English (e.g., "Repeat: ...").
