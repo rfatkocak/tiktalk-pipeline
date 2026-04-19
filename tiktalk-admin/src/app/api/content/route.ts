@@ -26,6 +26,7 @@ const TRANSLATION_BATCHES: string[][] = [
 const VALID_QUIZ_KINDS = ["multipleChoice", "fillInBlank", "listenAndPick"];
 const VALID_QUIZ_PURPOSES = ["comprehension", "grammar", "vocabulary"];
 const VALID_SECTION_TYPES = ["grammar", "cultural", "contextual_translation", "extra_notes", "common_mistakes"];
+const VALID_VOCAB_KINDS = ["basics", "phrase", "idiom"];
 
 // section_type → info.topics[].kind (camelCase for iOS).
 const SECTION_KIND_MAP: Record<string, string> = {
@@ -126,8 +127,25 @@ const ENGLISH_SCHEMA = {
         required: ["prompt_type", "prompt_text"],
       },
     },
+    vocabulary: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          word: { type: "string" },
+          kind: { type: "string" },           // basics | phrase | idiom
+          phonetic: { type: "string" },       // IPA
+          meaning_en: { type: "string" },
+          examples_en: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+        required: ["word", "kind", "meaning_en", "examples_en"],
+      },
+    },
   },
-  required: ["title", "slug", "description", "keywords", "quizzes", "info_sections", "speaking_prompts"],
+  required: ["title", "slug", "description", "keywords", "quizzes", "info_sections", "speaking_prompts", "vocabulary"],
 };
 
 // Built dynamically per batch — locale keys are required so Gemini cannot drift
@@ -163,8 +181,19 @@ function buildTranslationSchema(locales: string[]) {
           required: ["title", "body"],
         },
       },
+      vocabulary: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            meaning: { type: "string" },
+            examples: { type: "array", items: { type: "string" } },
+          },
+          required: ["meaning", "examples"],
+        },
+      },
     },
-    required: ["subtitles", "quiz_explanations", "info_sections"],
+    required: ["subtitles", "quiz_explanations", "info_sections", "vocabulary"],
   };
 
   const translationsProps: Record<string, unknown> = {};
@@ -399,6 +428,34 @@ D) SPEAKING PROMPTS (exactly 3) matched to "${args.level}" level:
    - advanced: Fully open-ended
    Set context_hint for LLM evaluation, expected_text null.
 
+E) VOCABULARY (3-6 items — most useful words/phrases the learner should
+   walk away knowing after watching this scene):
+- word: The word or short phrase AS IT APPEARS in the dialog ("neural link",
+  "gotta", "grab a coffee"). Case-sensitive preservation not required —
+  lowercase unless it's a proper noun.
+- kind: One of
+   * "basics"  → single common word ("coffee", "yesterday", "hungry")
+   * "phrase"  → 2-4 word collocation ("neural link", "grab a coffee")
+   * "idiom"   → figurative expression ("break the ice", "hit the road")
+- phonetic: IPA transcription (e.g. "/ˈkɒf.i/", "/ɡɒt.ə/"). If you're not
+  confident, omit the field — empty string is fine, we'd rather show nothing
+  than mislead a beginner.
+- meaning_en: One-sentence plain-English definition at "${args.level}" level
+  depth. Beginner = 5-10 words. Advanced = can include nuance, register.
+- examples_en: 1-2 short example sentences showing the word in use. At least
+  one example MUST come from the video dialog verbatim if possible. Keep
+  each example under 12 words.
+
+PICKING vocabulary (this is the most important step — don't dump the whole
+dictionary):
+- Only pick items a learner at "${args.level}" wouldn't already know.
+- Prefer items that appear in the DIALOG over generic curriculum words.
+- If the scene uses slang/contractions (gonna, wanna, gotta) at beginner
+  level, include them as "phrase" kind — learners need to decode them.
+- Idioms trump literal phrases when both are present.
+- Do NOT include function words (the, of, and), TP names, or things any
+  second-year student already knows unless the register is unusual.
+
 === OUTPUT FORMAT ===
 
 Return raw JSON (no markdown, no code blocks):
@@ -429,6 +486,15 @@ Return raw JSON (no markdown, no code blocks):
     {"prompt_type": "repeat", "prompt_text": "Repeat: ...", "expected_text": "...", "context_hint": null},
     {"prompt_type": "repeat", "prompt_text": "Repeat: ...", "expected_text": "...", "context_hint": null},
     {"prompt_type": "produce", "prompt_text": "...", "expected_text": null, "context_hint": "..."}
+  ],
+  "vocabulary": [
+    {
+      "word": "neural link",
+      "kind": "phrase",
+      "phonetic": "/ˈnʊr.əl lɪŋk/",
+      "meaning_en": "A cybernetic connection between a brain and a computer.",
+      "examples_en": ["You gotta fix your neural link.", "My neural link is glitching."]
+    }
   ]
 }`;
 }
@@ -442,12 +508,14 @@ function buildTranslationPrompt(args: {
   english: {
     quizzes: { explanation_en: string }[];
     info_sections: { title_en: string; body_en: string }[];
+    vocabulary: { word: string; meaning_en: string; examples_en: string[] }[];
   };
 }): string {
   const localeList = args.locales.map((l) => `${l} (${LOCALE_NAMES[l]})`).join(", ");
   const expectedSegCount = args.transcript.segments.length;
   const expectedQuizCount = args.english.quizzes.length;
   const expectedSectionCount = args.english.info_sections.length;
+  const expectedVocabCount = args.english.vocabulary.length;
 
   return `You are a professional translator for TikTalk, a language-learning app. This is PHASE 3 — translate English content into the following ${args.locales.length} target languages: ${localeList}.
 
@@ -459,6 +527,7 @@ CRITICAL RULES:
 - Return EXACTLY ${expectedSegCount} subtitle segments per locale (same count as English).
 - Return EXACTLY ${expectedQuizCount} quiz explanations per locale.
 - Return EXACTLY ${expectedSectionCount} info section entries per locale.
+- Return EXACTLY ${expectedVocabCount} vocabulary entries per locale (same order).
 
 === CONTEXT ===
 Channel: ${args.channelName}
@@ -474,12 +543,16 @@ ${args.english.quizzes.map((q, i) => `Quiz ${i + 1}: ${q.explanation_en}`).join(
 === ENGLISH INFO SECTIONS (to translate) ===
 ${args.english.info_sections.map((s, i) => `Section ${i + 1}:\nTitle: ${s.title_en}\nBody: ${s.body_en}`).join("\n\n")}
 
+=== ENGLISH VOCABULARY (to translate — keep the "word" itself in English, only translate meaning + examples) ===
+${args.english.vocabulary.map((v, i) => `Vocab ${i + 1}: word="${v.word}"\n  meaning: ${v.meaning_en}\n  examples: ${v.examples_en.map((e) => `"${e}"`).join(" | ")}`).join("\n\n")}
+
 === TASK ===
 
 For each of the ${args.locales.length} locales (${args.locales.join(", ")}), produce:
 1) subtitles: array of ${expectedSegCount} segments. Keep start/end/speaker unchanged from English. Only translate "text".
 2) quiz_explanations: array of ${expectedQuizCount} translated explanation strings (in order).
 3) info_sections: array of ${expectedSectionCount} {title, body} objects (in order). Body is markdown.
+4) vocabulary: array of ${expectedVocabCount} {meaning, examples[]} objects (in order, same item count as English). Keep the English "word" untouched — we translate only the meaning + examples.
 
 === OUTPUT FORMAT ===
 
@@ -489,7 +562,8 @@ Return raw JSON (no markdown):
     "${args.locales[0]}": {
       "subtitles": [{"start": 1.64, "end": 3.34, "text": "...", "speaker": "Speaker 0"}],
       "quiz_explanations": ["...", "...", "..."],
-      "info_sections": [{"title": "...", "body": "..."}]
+      "info_sections": [{"title": "...", "body": "..."}],
+      "vocabulary": [{"meaning": "...", "examples": ["...", "..."]}]
     },
     "${args.locales[1]}": { ... },
     "${args.locales[2]}": { ... }
@@ -561,6 +635,17 @@ function validateEnglish(
   if (spArr[1]?.prompt_type !== "repeat" || !spArr[1]?.expected_text) return "Speaking prompt 2 must be repeat with expected_text";
   if (spArr[2]?.prompt_type !== "produce") return "Speaking prompt 3 must be produce";
 
+  const vocab = result.vocabulary;
+  if (!Array.isArray(vocab) || vocab.length < 3 || vocab.length > 6) {
+    return `Expected 3-6 vocabulary items, got ${Array.isArray(vocab) ? vocab.length : 0}`;
+  }
+  for (const v of vocab as Record<string, unknown>[]) {
+    if (!v.word || typeof v.word !== "string") return "Vocab item missing word";
+    if (!VALID_VOCAB_KINDS.includes(v.kind as string)) return `Invalid vocab kind: ${v.kind}`;
+    if (!v.meaning_en || typeof v.meaning_en !== "string") return "Vocab item missing meaning_en";
+    if (!Array.isArray(v.examples_en) || v.examples_en.length === 0) return "Vocab item missing examples_en";
+  }
+
   return null;
 }
 
@@ -569,7 +654,8 @@ function validateTranslationBatch(
   locales: string[],
   expectedSegCount: number,
   expectedQuizCount: number,
-  expectedSectionCount: number
+  expectedSectionCount: number,
+  expectedVocabCount: number
 ): string | null {
   const translations = batch.translations as Record<string, unknown> | undefined;
   if (!translations || typeof translations !== "object") return "Missing translations";
@@ -601,6 +687,16 @@ function validateTranslationBatch(
     for (const sec of secs) {
       const s = sec as Record<string, unknown>;
       if (!s.title || !s.body) return `${loc}: info section missing title/body`;
+    }
+
+    const vocab = entry.vocabulary;
+    if (!Array.isArray(vocab) || vocab.length !== expectedVocabCount) {
+      return `${loc}: expected ${expectedVocabCount} vocabulary entries, got ${Array.isArray(vocab) ? vocab.length : 0}`;
+    }
+    for (const v of vocab) {
+      const o = v as Record<string, unknown>;
+      if (typeof o.meaning !== "string" || !o.meaning) return `${loc}: vocab entry missing meaning`;
+      if (!Array.isArray(o.examples)) return `${loc}: vocab entry missing examples`;
     }
   }
 
@@ -797,6 +893,13 @@ export async function POST(req: NextRequest) {
       expected_text: string | null;
       context_hint: string | null;
     }[];
+    vocabulary: {
+      word: string;
+      kind: string;
+      phonetic?: string;
+      meaning_en: string;
+      examples_en: string[];
+    }[];
   };
 
   let english: EnglishContent;
@@ -852,6 +955,7 @@ export async function POST(req: NextRequest) {
     subtitles: { start: number; end: number; text: string; speaker?: string }[];
     quiz_explanations: string[];
     info_sections: { title: string; body: string }[];
+    vocabulary: { meaning: string; examples: string[] }[];
   };
   type TranslationBatchResponse = {
     translations: Record<string, TranslationEntry>;
@@ -860,6 +964,7 @@ export async function POST(req: NextRequest) {
   const expectedSegCount = transcript.segments?.length || 0;
   const expectedQuizCount = english.quizzes.length;
   const expectedSectionCount = english.info_sections.length;
+  const expectedVocabCount = english.vocabulary.length;
 
   await logPipeline(poolItemId, "content", "info", "Phase 3 (translations) started — 4 parallel batches");
   const phase3Start = Date.now();
@@ -876,6 +981,11 @@ export async function POST(req: NextRequest) {
         english: {
           quizzes: english.quizzes.map((q) => ({ explanation_en: q.explanation_en })),
           info_sections: english.info_sections.map((s) => ({ title_en: s.title_en, body_en: s.body_en })),
+          vocabulary: english.vocabulary.map((v) => ({
+            word: v.word,
+            meaning_en: v.meaning_en,
+            examples_en: v.examples_en,
+          })),
         },
       }),
       temperature: 0.3,
@@ -888,7 +998,8 @@ export async function POST(req: NextRequest) {
       batchLocales,
       expectedSegCount,
       expectedQuizCount,
-      expectedSectionCount
+      expectedSectionCount,
+      expectedVocabCount
     );
     if (validationErr) {
       await logPipeline(poolItemId, "content", "error", `Translation batch validation failed`, {
@@ -1003,10 +1114,35 @@ export async function POST(req: NextRequest) {
     contextHint: sp.context_hint,
   }));
 
+  // Vocabulary shape uses the plural "meanings" + "translations" keys so
+  // backend's LocalizeInPlace collapses them at read time based on
+  // Accept-Language (pluralToSingular: meanings→meaning, translations→translation).
+  const vocabularyJson = english.vocabulary.map((v, i) => {
+    const meanings: Record<string, string> = { en: v.meaning_en };
+    for (const loc of LOCALES) {
+      meanings[loc] = allTranslations[loc].vocabulary[i]?.meaning ?? "";
+    }
+    const examples = v.examples_en.map((ex, j) => {
+      const translations: Record<string, string> = {};
+      for (const loc of LOCALES) {
+        translations[loc] = allTranslations[loc].vocabulary[i]?.examples?.[j] ?? "";
+      }
+      return { text: ex, translations };
+    });
+    return {
+      id: `v-${i}`,
+      word: v.word,
+      kind: v.kind,
+      phonetic: v.phonetic || "",
+      meanings,
+      examples,
+    };
+  });
+
   const infoJson = {
     topics: topicsJson,
     speakPrompts: speakPromptsJson,
-    vocabulary: [] as unknown[],
+    vocabulary: vocabularyJson,
     createPrompts: [] as unknown[],
   };
 
