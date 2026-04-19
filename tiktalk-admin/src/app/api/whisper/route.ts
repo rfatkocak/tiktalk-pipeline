@@ -62,10 +62,13 @@ export async function POST(req: NextRequest) {
   const whisperResult = await res.json();
   console.log("Whisper raw:", JSON.stringify(whisperResult).slice(0, 1000));
 
+  // Whisper returns start/end in SECONDS. We keep it that way — iOS expects
+  // seconds, mock lessons use seconds, backend passes subtitles.jsonb through
+  // unchanged. Round to 2 decimals so the jsonb stays compact.
   const segments = (whisperResult.segments || []).map(
     (seg: { start: number; end: number; text: string; speaker: string }) => ({
-      start: Math.round(seg.start * 1000),
-      end: Math.round(seg.end * 1000),
+      start: Math.round(seg.start * 100) / 100,
+      end: Math.round(seg.end * 100) / 100,
       text: seg.text.trim(),
       speaker: seg.speaker || null,
     })

@@ -487,7 +487,7 @@ Return raw JSON (no markdown):
 {
   "translations": {
     "${args.locales[0]}": {
-      "subtitles": [{"start": 1640, "end": 3340, "text": "...", "speaker": "Speaker 0"}],
+      "subtitles": [{"start": 1.64, "end": 3.34, "text": "...", "speaker": "Speaker 0"}],
       "quiz_explanations": ["...", "...", "..."],
       "info_sections": [{"title": "...", "body": "..."}]
     },
