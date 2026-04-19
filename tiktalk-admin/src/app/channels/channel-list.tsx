@@ -28,7 +28,9 @@ const LANGUAGES = [
   { code: "ja", label: "Japanese" },
 ];
 
-async function uploadAvatar(file: File): Promise<string> {
+async function uploadAvatar(
+  file: File
+): Promise<{ guid: string; thumbnailFileName: string }> {
   const fd = new FormData();
   fd.append("file", file);
   const res = await fetch("/api/upload-channel-avatar", {
@@ -39,8 +41,7 @@ async function uploadAvatar(file: File): Promise<string> {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || `upload failed (HTTP ${res.status})`);
   }
-  const { guid } = (await res.json()) as { guid: string };
-  return guid;
+  return (await res.json()) as { guid: string; thumbnailFileName: string };
 }
 
 export function ChannelList({ channels }: { channels: Channel[] }) {
@@ -50,6 +51,7 @@ export function ChannelList({ channels }: { channels: Channel[] }) {
   // --- Create form state ---
   const [avatarEmoji, setAvatarEmoji] = useState("");
   const [avatarGuid, setAvatarGuid] = useState("");
+  const [avatarThumbFile, setAvatarThumbFile] = useState("");
   const [avatarPreview, setAvatarPreview] = useState("");
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -60,6 +62,7 @@ export function ChannelList({ channels }: { channels: Channel[] }) {
   const [editDescription, setEditDescription] = useState("");
   const [editAvatarEmoji, setEditAvatarEmoji] = useState("");
   const [editAvatarGuid, setEditAvatarGuid] = useState(""); // empty = keep existing
+  const [editAvatarThumbFile, setEditAvatarThumbFile] = useState("");
   const [editAvatarPreview, setEditAvatarPreview] = useState("");
   const [editUploading, setEditUploading] = useState(false);
   const editFileRef = useRef<HTMLInputElement>(null);
@@ -70,8 +73,9 @@ export function ChannelList({ channels }: { channels: Channel[] }) {
     setAvatarPreview(URL.createObjectURL(file));
     setUploading(true);
     try {
-      const guid = await uploadAvatar(file);
+      const { guid, thumbnailFileName } = await uploadAvatar(file);
       setAvatarGuid(guid);
+      setAvatarThumbFile(thumbnailFileName);
     } catch (err) {
       alert("Upload hata: " + (err as Error).message);
       setAvatarPreview("");
@@ -85,8 +89,9 @@ export function ChannelList({ channels }: { channels: Channel[] }) {
     setEditAvatarPreview(URL.createObjectURL(file));
     setEditUploading(true);
     try {
-      const guid = await uploadAvatar(file);
+      const { guid, thumbnailFileName } = await uploadAvatar(file);
       setEditAvatarGuid(guid);
+      setEditAvatarThumbFile(thumbnailFileName);
     } catch (err) {
       alert("Upload hata: " + (err as Error).message);
       setEditAvatarPreview("");
@@ -101,12 +106,14 @@ export function ChannelList({ channels }: { channels: Channel[] }) {
     setEditDescription(ch.description || "");
     setEditAvatarEmoji(ch.avatar_emoji || "");
     setEditAvatarGuid("");
+    setEditAvatarThumbFile("");
     setEditAvatarPreview("");
   }
 
   function cancelEdit() {
     setEditingId(null);
     setEditAvatarGuid("");
+    setEditAvatarThumbFile("");
     setEditAvatarPreview("");
   }
 
@@ -114,6 +121,7 @@ export function ChannelList({ channels }: { channels: Channel[] }) {
     setShowForm(false);
     setAvatarEmoji("");
     setAvatarGuid("");
+    setAvatarThumbFile("");
     setAvatarPreview("");
   }
 
@@ -131,6 +139,7 @@ export function ChannelList({ channels }: { channels: Channel[] }) {
           action={async (formData) => {
             formData.set("avatar_emoji", avatarEmoji);
             formData.set("avatar_bunny_video_id", avatarGuid);
+            formData.set("thumbnail_file_name", avatarThumbFile);
             await createChannel(formData);
             resetCreate();
           }}
@@ -235,6 +244,7 @@ export function ChannelList({ channels }: { channels: Channel[] }) {
                 formData.set("id", ch.id);
                 formData.set("avatar_emoji", editAvatarEmoji);
                 formData.set("avatar_bunny_video_id", editAvatarGuid);
+                formData.set("thumbnail_file_name", editAvatarThumbFile);
                 await updateChannel(formData);
                 cancelEdit();
               }}

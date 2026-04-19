@@ -31,8 +31,8 @@ export async function POST(req: NextRequest) {
   const title = `channel-${Date.now().toString(36)}`;
 
   try {
-    const guid = await uploadChannelAvatar(buffer, title, mime);
-    return NextResponse.json({ guid });
+    const { guid, thumbnailFileName } = await uploadChannelAvatar(buffer, title, mime);
+    return NextResponse.json({ guid, thumbnailFileName });
   } catch (err) {
     return NextResponse.json(
       { error: "upload failed: " + (err as Error).message },

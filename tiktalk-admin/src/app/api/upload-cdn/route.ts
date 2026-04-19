@@ -17,7 +17,7 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { query } from "@/lib/db";
-import { uploadLessonVideo, setCustomThumbnail } from "@/lib/bunny";
+import { uploadLessonVideo, setCustomThumbnail, getVideoMeta } from "@/lib/bunny";
 import { logPipeline } from "@/lib/pipeline-log";
 
 const DOWNLOAD_DIR = path.join(
@@ -104,12 +104,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Upload custom thumbnail to Bunny
+    // 4. Upload custom thumbnail to Bunny — Bunny renames the file on upload
+    //    (thumbnail.jpg → thumbnail_<hash>.jpg), so we re-fetch meta after
+    //    success and persist the real filename so backend signer knows which
+    //    path to sign.
+    let thumbnailFileName = "thumbnail.jpg";
     if (fs.existsSync(thumbPath)) {
       try {
         const thumbBuf = fs.readFileSync(thumbPath);
         await setCustomThumbnail(bunnyGuid, thumbBuf, "image/jpeg");
         fs.unlinkSync(thumbPath);
+        try {
+          const meta = await getVideoMeta(bunnyGuid);
+          if (meta.thumbnailFileName) thumbnailFileName = meta.thumbnailFileName;
+        } catch {
+          /* meta fetch failed — fall back to default thumbnail.jpg */
+        }
       } catch (err) {
         await logPipeline(
           poolItemId,
@@ -120,14 +130,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5. Persist guid + duration on the lesson row
+    // 5. Persist guid + duration + actual thumbnail filename on the lesson row
     await query(
       `UPDATE lessons
-       SET bunny_video_id = $1,
-           duration_sec   = $2,
-           updated_at     = now()
-       WHERE id = $3`,
-      [bunnyGuid, durationSec, lesson_id]
+       SET bunny_video_id      = $1,
+           duration_sec        = $2,
+           thumbnail_file_name = $3,
+           updated_at          = now()
+       WHERE id = $4`,
+      [bunnyGuid, durationSec, thumbnailFileName, lesson_id]
     );
 
     // 6. Publish the lesson and mark pool_item complete

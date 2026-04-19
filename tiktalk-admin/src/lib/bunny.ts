@@ -18,6 +18,7 @@ type VideoMeta = {
   length: number;
   width: number;
   height: number;
+  thumbnailFileName?: string;
 };
 
 /**
@@ -131,7 +132,7 @@ export async function uploadChannelAvatar(
   imageBuffer: Buffer,
   title: string,
   mime: "image/jpeg" | "image/png" = "image/jpeg"
-): Promise<string> {
+): Promise<{ guid: string; thumbnailFileName: string }> {
   // 1) create video shell (no binary uploaded)
   const createRes = await fetch(
     `${API_BASE}/library/${LIBRARY_ID}/videos`,
@@ -157,7 +158,12 @@ export async function uploadChannelAvatar(
   // 2) set the image as the custom thumbnail
   await setCustomThumbnail(guid, imageBuffer, mime);
 
-  return guid;
+  // 3) Bunny renames the thumbnail on custom upload (thumbnail.jpg →
+  // thumbnail_<hash>.jpg). Fetch the real filename so we can sign the
+  // right URL later — backend otherwise defaults to thumbnail.jpg and
+  // 404s.
+  const meta = await getVideoMeta(guid);
+  return { guid, thumbnailFileName: meta.thumbnailFileName || "thumbnail.jpg" };
 }
 
 /** Fetch video metadata — used to poll transcoding state + verify length. */
