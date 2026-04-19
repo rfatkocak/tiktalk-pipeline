@@ -43,13 +43,18 @@ export async function POST(req: NextRequest) {
       "Use nuanced language (C1-C2), idioms, phrasal verbs, subtle distinctions. Pick TPs that challenge fluency. Dialog runs at normal everyday speed — the kind of back-and-forth native speakers have without waiting for each other.",
   };
 
-  // Calibrated word budgets per level. These are what actually fits
-  // comfortably at the above pace in 15 seconds without cramming subtitles.
-  // Do NOT cheat by cranking up density — the video is for LEARNERS.
+  // Calibrated word budgets per level. THESE ARE TIGHT ON PURPOSE — 15 sec
+  // is very short and the video is for LEARNERS, not fluent viewers. Err on
+  // the side of "short and memorable" over "naturalistic but crammed". A
+  // beginner subtitle of 5 words + a 1-sec pause is vastly more useful than
+  // a 7-word line that flies past. Do NOT pad to hit the upper bound.
   const wordBudget: Record<string, string> = {
-    beginner:     "20-28 English words total, max 4 turns (2 lines per speaker). Keep sentences 4-7 words each.",
-    intermediate: "28-38 English words total, max 4 turns (2 lines per speaker). Sentences can be 5-12 words.",
-    advanced:     "35-45 English words total, max 4 turns (2 lines per speaker). Sentences can be 8-15 words.",
+    beginner:
+      "12-18 English words TOTAL (across the whole scene), max 4 turns (2 lines per speaker). Each line 3-5 words. Example: 'Can I have a coffee?' / 'Sure, what size?' / 'Small, please.' / 'Three dollars.' = 14 words.",
+    intermediate:
+      "18-26 English words TOTAL, max 4 turns (2 lines per speaker). Each line 4-7 words.",
+    advanced:
+      "26-36 English words TOTAL, max 4 turns (2 lines per speaker). Each line 6-10 words.",
   };
 
   const prompt = `You are a content planner for TikTalk, a social-media style language learning app that teaches English through 15-second AI-generated video scenes. Users scroll a TikTok-like feed and learn English passively/actively.
@@ -108,8 +113,8 @@ Seedance prompt should include:
 
 {
   "selected_tp_ids": ["<uuid-1>", "<uuid-2>"],
-  "seedance_prompt": "Medium shot inside a warm, sunlit coffee shop in the morning. A cheerful young woman barista with an apron stands behind the counter. A tired male customer in a hoodie approaches. Natural lighting, cozy atmosphere. The characters speak clearly and slowly, with a natural half-beat pause between each line.\\n\\nBarista: \\"Good morning! What can I get you?\\"\\nCustomer: \\"Can I have a large coffee, please?\\"\\nBarista: \\"Sure. Anything else?\\"\\nCustomer: \\"No thanks, that's all.\\"",
-  "reasoning": "Seçilen TP'ler temel sipariş kalıplarını öğretiyor: 'Can I have...' isteme kalıbı ve 'anything else' açık uçlu sorusu. Sahne kahveci senaryosu, beginner seviyesi için ideal — kelime basit, kalıplar günlük hayatta sık kullanılıyor, diyalog 23 kelime (beginner bütçesi 20-28) ve karakterler yavaş tonda konuştuğu için altyazı rahat okunuyor."
+  "seedance_prompt": "Medium shot inside a warm, sunlit coffee shop in the morning. A cheerful young woman barista with an apron stands behind the counter. A tired male customer in a hoodie approaches. Natural lighting, cozy atmosphere. The characters speak clearly and slowly, with a natural half-beat pause between each line.\\n\\nBarista: \\"What can I get you?\\"\\nCustomer: \\"Can I have a coffee?\\"\\nBarista: \\"Sure. Anything else?\\"\\nCustomer: \\"No thanks.\\"",
+  "reasoning": "Seçilen TP'ler temel sipariş kalıplarını öğretiyor: 'Can I have...' isteme kalıbı ve 'anything else' açık uçlu sorusu. Sahne kahveci senaryosu, beginner seviyesi için ideal — diyalog toplam 15 kelime (beginner bütçesi 12-18), her satır 3-5 kelime, karakterler yavaş tonda konuştuğu için 15 saniyeye rahat sığıyor ve altyazı akmadan okunabiliyor."
 }
 
 === YOUR OUTPUT ===
