@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+:root {
+  --font-sans: var(--font-geist-sans);
+}
+
+html, body {
+  height: 100%;
+}

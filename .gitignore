@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Seedance runtime artifacts
+seedance-automation/browser-data/
+seedance-automation/downloads/
+seedance-automation/logs/
+seedance-automation/*.png
+
+# Next.js build
+tiktalk-admin/.next/
+tiktalk-admin/out/
+tiktalk-admin/*.tsbuildinfo
+
+# Env
+.env*
+!.env.example
+
+# Claude local
+.claude/

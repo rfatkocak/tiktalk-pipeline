@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <title>Seedance Automation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; }
+
+    .header {
+      background: #16213e;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #0f3460;
+    }
+    .header h1 { font-size: 20px; color: #e94560; }
+    .header .stats { font-size: 13px; color: #888; }
+
+    .toolbar {
+      padding: 12px 24px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+    }
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .btn-primary { background: #e94560; color: #fff; }
+    .btn-primary:hover { background: #c73652; }
+    .btn-primary:disabled { background: #555; cursor: not-allowed; }
+    .btn-secondary { background: #0f3460; color: #ddd; }
+    .btn-secondary:hover { background: #1a4a8a; }
+    .btn-danger { background: #8b0000; color: #fff; }
+    .btn-danger:hover { background: #a00000; }
+    .btn-success { background: #2e7d32; color: #fff; }
+    .btn-success:hover { background: #388e3c; }
+
+    .main { display: flex; height: calc(100vh - 110px); }
+
+    /* Left panel - add form */
+    .panel-left {
+      width: 350px;
+      padding: 16px;
+      border-right: 1px solid #0f3460;
+      overflow-y: auto;
+      background: #16213e;
+    }
+    .panel-left h3 { margin-bottom: 12px; font-size: 15px; color: #e94560; }
+
+    .form-group { margin-bottom: 12px; }
+    .form-group label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
+    .form-group textarea, .form-group input, .form-group select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+      background: #1a1a2e;
+      color: #eee;
+      font-size: 13px;
+    }
+    .form-group textarea { height: 100px; resize: vertical; }
+
+    /* Right panel - list */
+    .panel-right {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .video-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .video-table th {
+      text-align: left;
+      padding: 8px 12px;
+      background: #0f3460;
+      font-size: 12px;
+      color: #aaa;
+      position: sticky;
+      top: 0;
+    }
+    .video-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid #1e1e3f;
+      font-size: 13px;
+      vertical-align: top;
+    }
+    .video-table tr:hover { background: #1e1e3f; }
+
+    .prompt-cell {
+      max-width: 400px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .prompt-cell:hover {
+      white-space: normal;
+      word-break: break-word;
+    }
+
+    .status-badge {
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .status-pending { background: #555; color: #ccc; }
+    .status-generating { background: #e65100; color: #fff; }
+    .status-completed { background: #2e7d32; color: #fff; }
+    .status-error { background: #8b0000; color: #fff; }
+
+    .delete-btn {
+      background: none;
+      border: none;
+      color: #666;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    .delete-btn:hover { color: #e94560; }
+
+    /* Progress bar */
+    .progress-container {
+      display: none;
+      padding: 12px 24px;
+      background: #0f3460;
+    }
+    .progress-container.active { display: block; }
+    .progress-bar {
+      height: 4px;
+      background: #333;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: #e94560;
+      transition: width 0.3s;
+    }
+    .progress-text { font-size: 12px; color: #aaa; margin-top: 6px; }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px;
+      color: #555;
+    }
+    .empty-state p { font-size: 15px; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Seedance Automation</h1>
+  <div class="stats" id="stats"></div>
+</div>
+
+<div class="toolbar">
+  <button class="btn btn-primary" id="btn-start" onclick="startGeneration()">Başlat</button>
+  <button class="btn btn-danger" id="btn-stop" onclick="stopGeneration()" style="display:none">Durdur</button>
+  <button class="btn btn-secondary" onclick="importExcel()">Excel İçe Aktar</button>
+  <button class="btn btn-secondary" onclick="importJson()">JSON İçe Aktar</button>
+  <button class="btn btn-danger" onclick="deleteAllPending()">Bekleyenleri Sil</button>
+</div>
+
+<div class="progress-container" id="progress-container">
+  <div class="progress-bar"><div class="progress-bar-fill" id="progress-fill"></div></div>
+  <div class="progress-text" id="progress-text"></div>
+</div>
+
+<div class="main">
+  <div class="panel-left">
+    <h3>Yeni Video Ekle</h3>
+
+    <div class="form-group">
+      <label>Prompt</label>
+      <textarea id="input-prompt" placeholder="Videonuzu tanımlayın..."></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>Model</label>
+      <select id="input-model">
+        <option value="Seedance 2.0">Seedance 2.0</option>
+        <option value="Seedance 2.0 Fast">Seedance 2.0 Fast</option>
+        <option value="Seedance 1.5 Pro">Seedance 1.5 Pro</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>En-Boy Oranı</label>
+      <select id="input-ratio">
+        <option value="9:16">9:16 (Dikey)</option>
+        <option value="16:9">16:9 (Yatay)</option>
+        <option value="1:1">1:1 (Kare)</option>
+        <option value="4:3">4:3</option>
+        <option value="3:4">3:4</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Çözünürlük</label>
+      <select id="input-resolution">
+        <option value="720p">720p</option>
+      </select>
+    </div>
+
+    <button class="btn btn-success" onclick="addVideo()" style="width:100%">Ekle</button>
+  </div>
+
+  <div class="panel-right">
+    <table class="video-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Prompt</th>
+          <th>Model</th>
+          <th>Oran</th>
+          <th>Durum</th>
+          <th>Dosya</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="video-list"></tbody>
+    </table>
+    <div class="empty-state" id="empty-state" style="display:none">
+      <p>Henüz video eklenmemiş</p>
+    </div>
+  </div>
+</div>
+
+<script>
+  let videos = [];
+  let isRunning = false;
+  let shouldStop = false;
+
+  // --- LOAD ---
+  async function loadVideos() {
+    videos = await window.api.getVideos();
+    renderList();
+    updateStats();
+  }
+
+  function renderList() {
+    const tbody = document.getElementById('video-list');
+    const empty = document.getElementById('empty-state');
+
+    if (videos.length === 0) {
+      tbody.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+
+    tbody.innerHTML = videos.map(v => `
+      <tr>
+        <td>${v.id}</td>
+        <td class="prompt-cell" title="${v.prompt.replace(/"/g, '&quot;')}">${v.prompt}</td>
+        <td>${v.model}</td>
+        <td>${v.aspect_ratio}</td>
+        <td><span class="status-badge status-${v.status}">${statusText(v.status)}</span></td>
+        <td>${v.file_path ? '✅' : '-'}</td>
+        <td><button class="delete-btn" onclick="deleteVideo(${v.id})">✕</button></td>
+      </tr>
+    `).join('');
+  }
+
+  function statusText(s) {
+    const map = { pending: 'Bekliyor', generating: 'Üretiliyor', completed: 'Tamamlandı', error: 'Hata' };
+    return map[s] || s;
+  }
+
+  function updateStats() {
+    const pending = videos.filter(v => v.status === 'pending').length;
+    const completed = videos.filter(v => v.status === 'completed').length;
+    const total = videos.length;
+    document.getElementById('stats').textContent =
+      `Toplam: ${total} | Bekleyen: ${pending} | Tamamlanan: ${completed}`;
+  }
+
+  // --- ADD ---
+  async function addVideo() {
+    const prompt = document.getElementById('input-prompt').value.trim();
+    if (!prompt) return alert('Prompt boş olamaz!');
+
+    await window.api.addVideo({
+      prompt,
+      model: document.getElementById('input-model').value,
+      aspect_ratio: document.getElementById('input-ratio').value,
+      resolution: document.getElementById('input-resolution').value,
+    });
+
+    document.getElementById('input-prompt').value = '';
+    await loadVideos();
+  }
+
+  // --- IMPORT ---
+  async function importExcel() {
+    const items = await window.api.importExcel();
+    if (!items || items.length === 0) return;
+    await window.api.addVideosBulk(items);
+    await loadVideos();
+    alert(`${items.length} video eklendi!`);
+  }
+
+  async function importJson() {
+    const items = await window.api.importJson();
+    if (!items || items.length === 0) return;
+    await window.api.addVideosBulk(items);
+    await loadVideos();
+    alert(`${items.length} video eklendi!`);
+  }
+
+  // --- DELETE ---
+  async function deleteVideo(id) {
+    await window.api.deleteVideo(id);
+    await loadVideos();
+  }
+
+  async function deleteAllPending() {
+    if (!confirm('Tüm bekleyen videoları silmek istediğinize emin misiniz?')) return;
+    await window.api.deleteAllPending();
+    await loadVideos();
+  }
+
+  // --- GENERATION ---
+  // Listen for progress updates from automation
+  window.api.onProgress((data) => {
+    const { videoId, progress } = data;
+    setProgress(currentPct, `[${currentIdx}/${currentTotal}] ${progress}`);
+  });
+
+  let currentPct = 0;
+  let currentIdx = 0;
+  let currentTotal = 0;
+
+  async function startGeneration() {
+    if (isRunning) return;
+    isRunning = true;
+    shouldStop = false;
+
+    document.getElementById('btn-start').style.display = 'none';
+    document.getElementById('btn-stop').style.display = 'inline-block';
+    document.getElementById('progress-container').classList.add('active');
+
+    const pending = videos.filter(v => v.status === 'pending');
+    if (pending.length === 0) {
+      alert('Bekleyen video yok!');
+      stopUI();
+      return;
+    }
+
+    currentTotal = pending.length;
+    setProgress(0, `Tarayıcı açılıyor... (${pending.length} video işlenecek)`);
+
+    // Tarayıcıyı aç
+    try {
+      const { loggedIn } = await window.api.launchBrowser();
+      if (!loggedIn) {
+        setProgress(0, '⚠️ Giriş yapılmamış! Tarayıcıda giriş yap, sonra tekrar Başlat.');
+        stopUI();
+        return;
+      }
+    } catch (err) {
+      setProgress(0, `❌ Tarayıcı açılamadı: ${err.message}`);
+      stopUI();
+      return;
+    }
+
+    // Sırayla videoları üret
+    for (let i = 0; i < pending.length; i++) {
+      if (shouldStop) break;
+
+      const video = pending[i];
+      currentIdx = i + 1;
+      currentPct = Math.round((i / pending.length) * 100);
+      setProgress(currentPct, `[${i + 1}/${pending.length}] Başlıyor: ${video.prompt.substring(0, 50)}...`);
+
+      // Durumu "generating" yap
+      await window.api.updateVideo(video.id, { status: 'generating' });
+      await loadVideos();
+
+      try {
+        const result = await window.api.generateVideo(video);
+
+        // Başarılı - DB güncelle
+        await window.api.updateVideo(video.id, {
+          status: 'completed',
+          file_path: result.filePath,
+          video_url: result.videoUrl,
+          completed_at: new Date().toISOString(),
+        });
+      } catch (err) {
+        // Hata - DB güncelle
+        await window.api.updateVideo(video.id, {
+          status: 'error',
+          error: err.message,
+        });
+      }
+
+      await loadVideos();
+
+      // Sıradaki için kısa mola
+      if (i < pending.length - 1 && !shouldStop) {
+        setProgress(currentPct, `Sıradaki video için 3sn bekleniyor...`);
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+
+    // Tarayıcıyı kapat
+    try { await window.api.closeBrowser(); } catch {}
+
+    setProgress(100, shouldStop ? 'Durduruldu!' : 'Tüm videolar tamamlandı!');
+    setTimeout(() => stopUI(), 3000);
+  }
+
+  function stopGeneration() {
+    shouldStop = true;
+    setProgress(0, 'Durduruluyor...');
+  }
+
+  function stopUI() {
+    isRunning = false;
+    document.getElementById('btn-start').style.display = 'inline-block';
+    document.getElementById('btn-stop').style.display = 'none';
+    document.getElementById('progress-container').classList.remove('active');
+    loadVideos();
+  }
+
+  function setProgress(pct, text) {
+    document.getElementById('progress-fill').style.width = pct + '%';
+    document.getElementById('progress-text').textContent = text;
+  }
+
+  // Init
+  loadVideos();
+</script>
+</body>
+</html>

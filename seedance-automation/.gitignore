@@ -1,0 +1,6 @@
+node_modules/
+browser-data/
+downloads/
+logs/
+*.png
+.claude/
