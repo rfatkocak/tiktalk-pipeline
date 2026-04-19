@@ -118,6 +118,48 @@ export async function setCustomThumbnail(
   }
 }
 
+/**
+ * Upload a channel avatar image to Bunny Stream as a "video" asset whose only
+ * useful bit is its custom thumbnail. We never PUT a video binary — Bunny
+ * happily serves /{guid}/thumbnail.jpg at the signed CDN URL the backend
+ * produces, and that's exactly what iOS renders for channel avatars.
+ *
+ * Store the returned guid in `channels.avatar_bunny_video_id`. Backend signs
+ * + returns the URL in the channel response (`avatarUrl`).
+ */
+export async function uploadChannelAvatar(
+  imageBuffer: Buffer,
+  title: string,
+  mime: "image/jpeg" | "image/png" = "image/jpeg"
+): Promise<string> {
+  // 1) create video shell (no binary uploaded)
+  const createRes = await fetch(
+    `${API_BASE}/library/${LIBRARY_ID}/videos`,
+    {
+      method: "POST",
+      headers: {
+        AccessKey: API_KEY,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ title: `avatar-${title}` }),
+    }
+  );
+  if (!createRes.ok) {
+    throw new Error(
+      `Bunny create avatar shell failed: ${createRes.status} ${await createRes.text()}`
+    );
+  }
+  const created = (await createRes.json()) as { guid?: string };
+  const guid = created.guid;
+  if (!guid) throw new Error("Bunny create avatar shell: no guid in response");
+
+  // 2) set the image as the custom thumbnail
+  await setCustomThumbnail(guid, imageBuffer, mime);
+
+  return guid;
+}
+
 /** Fetch video metadata — used to poll transcoding state + verify length. */
 export async function getVideoMeta(guid: string): Promise<VideoMeta> {
   const res = await fetch(
