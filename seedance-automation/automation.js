@@ -106,11 +106,22 @@ async function generateVideo(videoData, onProgress) {
   await waitUntilIdle(onProgress);
 
   // 1) Prompt yaz
+  //
+  // Dreamina replaced the <textarea> with a Tiptap/ProseMirror
+  // contenteditable editor. The placeholder paragraph carries the
+  // `is-editor-empty` class — click it to focus the editor, then use
+  // keyboard input (contenteditable doesn't support .fill() on <p>).
   onProgress('Prompt yazılıyor...');
-  const textarea = page.locator('textarea[class*="prompt-textarea"]');
-  await textarea.click();
-  await textarea.fill('');
-  await textarea.fill(prompt);
+  const editorPlaceholder = page.locator('p.is-editor-empty').first();
+  await editorPlaceholder.waitFor({ state: 'visible', timeout: 15000 });
+  await editorPlaceholder.click();
+  // Select-all + delete first, in case the editor is somehow non-empty.
+  const selectAllKey = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
+  await page.keyboard.press(selectAllKey);
+  await page.keyboard.press('Delete');
+  // insertText fires a single input event (faster + cleaner for Tiptap
+  // than .type() which simulates each keystroke).
+  await page.keyboard.insertText(prompt);
   await page.waitForTimeout(1000);
 
   // 2) Generate butonuna bas
