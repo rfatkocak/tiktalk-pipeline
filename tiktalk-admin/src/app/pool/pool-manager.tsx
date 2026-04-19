@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { createPoolItem, deletePoolItem, toggleLessonStatus } from "./actions";
 
@@ -68,6 +69,7 @@ interface PoolItem {
   transcript: Transcript | null;
   vibes: { id: string; name: string }[] | null;
   tps: { id: string; name: string; category: string; level: string }[] | null;
+  latest_log: { phase: string; level: string; message: string; created_at: string } | null;
   created_at: string;
 }
 
@@ -85,6 +87,20 @@ export function PoolManager({
   poolItems: unknown[];
 }) {
   const items = poolItems as PoolItem[];
+  const router = useRouter();
+
+  // Auto-refresh while any pipeline step is in flight so the operator can
+  // watch phase progress without hitting reload. Status comes from DB, so
+  // the view survives hard reloads too.
+  const anyProcessing = items.some(
+    (i) => i.status === "processing" || (i.status === "completed" && i.lesson_id && !i.lesson_status)
+  );
+  useEffect(() => {
+    if (!anyProcessing) return;
+    const t = setInterval(() => router.refresh(), 4000);
+    return () => clearInterval(t);
+  }, [anyProcessing, router]);
+
   const [showForm, setShowForm] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState("");
   const [selectedLevel, setSelectedLevel] = useState("beginner");
@@ -600,12 +616,28 @@ export function PoolManager({
                   </div>
                 )}
 
-                {/* Pipeline status */}
-                {pipelineStatus[item.id] && (
+                {/* Pipeline status — client-side polling first, DB-backed
+                    latest_log as fallback so state survives page reloads. */}
+                {pipelineStatus[item.id] ? (
                   <span className="text-[11px] text-blue-600 font-medium animate-pulse shrink-0">
                     {pipelineStatus[item.id]}
                   </span>
-                )}
+                ) : item.latest_log ? (
+                  <span
+                    title={new Date(item.latest_log.created_at).toLocaleString()}
+                    className={`text-[11px] font-medium shrink-0 truncate max-w-[28rem] ${
+                      item.latest_log.level === "error"
+                        ? "text-red-600"
+                        : item.latest_log.level === "warn"
+                        ? "text-amber-600"
+                        : item.status === "processing"
+                        ? "text-blue-600 animate-pulse"
+                        : "text-zinc-400"
+                    }`}
+                  >
+                    [{item.latest_log.phase}] {item.latest_log.message}
+                  </span>
+                ) : null}
 
                 {/* Step progress dots */}
                 <div className="flex gap-1 ml-auto shrink-0">

@@ -35,7 +35,14 @@ export default async function PoolPage() {
         (SELECT json_agg(json_build_object('id', v.id, 'name', v.name))
          FROM pool_item_vibes piv JOIN vibes v ON v.id = piv.vibe_id WHERE piv.pool_item_id = pi.id) as vibes,
         (SELECT json_agg(json_build_object('id', tp.id, 'name', tp.name, 'category', tp.category, 'level', tp.level))
-         FROM pool_item_teaching_points pit JOIN teaching_points tp ON tp.id = pit.teaching_point_id WHERE pit.pool_item_id = pi.id) as tps
+         FROM pool_item_teaching_points pit JOIN teaching_points tp ON tp.id = pit.teaching_point_id WHERE pit.pool_item_id = pi.id) as tps,
+        -- Latest pipeline_log line so pool listing shows live phase progress
+        -- (e.g. "whisper: Transcribing…") even after a page reload.
+        (SELECT json_build_object('phase', pl.phase, 'level', pl.level, 'message', pl.message, 'created_at', pl.created_at)
+         FROM pipeline_logs pl
+         WHERE pl.pool_item_id = pi.id
+         ORDER BY pl.created_at DESC
+         LIMIT 1) as latest_log
       FROM pool_items pi
       LEFT JOIN channels c ON c.id = pi.channel_id
       LEFT JOIN lessons  l ON l.id = pi.lesson_id

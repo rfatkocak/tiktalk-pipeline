@@ -1,12 +1,23 @@
+const path = require('path');
+const fs = require('fs');
 const { Client } = require('pg');
 
-const client = new Client({
-  host: '91.98.46.133',
-  port: 35432,
-  user: 'tiktalk',
-  password: '23uVSG28KT4Mrdz4J4bep6Unr678sQln',
-  database: 'tiktalk',
-});
+// Pick DATABASE_URL from tiktalk-admin/.env.local so we never hardcode creds.
+if (!process.env.DATABASE_URL) {
+  const envPath = path.join(__dirname, '..', 'tiktalk-admin', '.env.local');
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+  }
+}
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL missing — set it in tiktalk-admin/.env.local.');
+  process.exit(1);
+}
+
+const client = new Client({ connectionString: process.env.DATABASE_URL });
 
 const TPS = [
   // ==========================================
