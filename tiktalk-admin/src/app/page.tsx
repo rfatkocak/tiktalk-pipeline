@@ -6,19 +6,21 @@ export default async function DashboardPage() {
   const channels = await query("SELECT COUNT(*) FROM channels");
   const vibes = await query("SELECT COUNT(*) FROM vibes");
   const tps = await query("SELECT COUNT(*) FROM teaching_points");
-  const videos = await query("SELECT COUNT(*) FROM videos");
+  const lessons = await query("SELECT COUNT(*) FROM lessons WHERE deleted_at IS NULL");
+  const published = await query("SELECT COUNT(*) FROM lessons WHERE deleted_at IS NULL AND published_at IS NOT NULL");
 
   const stats = [
     { label: "Channels", value: channels.rows[0].count },
     { label: "Vibes", value: vibes.rows[0].count },
     { label: "Teaching Points", value: tps.rows[0].count },
-    { label: "Videos", value: videos.rows[0].count },
+    { label: "Lessons", value: lessons.rows[0].count },
+    { label: "Published", value: published.rows[0].count },
   ];
 
   return (
     <div>
       <h2 className="text-xl font-semibold mb-6">Dashboard</h2>
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-5 gap-4">
         {stats.map((s) => (
           <div
             key={s.label}

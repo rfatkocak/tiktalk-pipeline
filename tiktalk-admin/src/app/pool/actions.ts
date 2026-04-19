@@ -33,7 +33,7 @@ export async function createPoolItem(data: {
 
   for (const tpId of data.tp_ids) {
     await query(
-      "INSERT INTO pool_item_tps (pool_item_id, teaching_point_id) VALUES ($1, $2)",
+      "INSERT INTO pool_item_teaching_points (pool_item_id, teaching_point_id) VALUES ($1, $2)",
       [poolItemId, tpId]
     );
   }
@@ -46,10 +46,25 @@ export async function deletePoolItem(id: string) {
   revalidatePath("/pool");
 }
 
-export async function toggleVideoStatus(videoId: string, newStatus: "published" | "archived") {
-  await query(
-    `UPDATE videos SET status = $1, published_at = $2 WHERE id = $3`,
-    [newStatus, newStatus === "published" ? new Date().toISOString() : null, videoId]
-  );
+// New schema: lessons.published_at NULL → hidden, NOT NULL → on feed.
+// "archived" = soft delete (deleted_at set). Re-publishing also clears
+// deleted_at so previously-archived lessons can come back.
+export async function toggleLessonStatus(
+  lessonId: string,
+  newStatus: "published" | "archived"
+) {
+  if (newStatus === "published") {
+    await query(
+      `UPDATE lessons
+         SET published_at = now(), deleted_at = NULL, updated_at = now()
+       WHERE id = $1`,
+      [lessonId]
+    );
+  } else {
+    await query(
+      `UPDATE lessons SET deleted_at = now(), updated_at = now() WHERE id = $1`,
+      [lessonId]
+    );
+  }
   revalidatePath("/pool");
 }

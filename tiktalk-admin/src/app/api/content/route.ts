@@ -20,9 +20,24 @@ const TRANSLATION_BATCHES: string[][] = [
   ["it", "ru", "pl"],
 ];
 
-const VALID_QUIZ_TYPES = ["comprehension", "grammar", "vocabulary"];
+// Quiz dimensions (both tracked separately on backend Question struct):
+//  - kind     = FORMAT     (UI rendering)
+//  - purpose  = SEMANTIC   (feed ranking, "weak on grammar quizzes" etc.)
+const VALID_QUIZ_KINDS = ["multipleChoice", "fillInBlank", "listenAndPick"];
+const VALID_QUIZ_PURPOSES = ["comprehension", "grammar", "vocabulary"];
 const VALID_SECTION_TYPES = ["grammar", "cultural", "contextual_translation", "extra_notes", "common_mistakes"];
+
+// section_type → info.topics[].kind (camelCase for iOS).
+const SECTION_KIND_MAP: Record<string, string> = {
+  grammar: "teachingPoint",
+  cultural: "cultural",
+  contextual_translation: "contextualTranslation",
+  extra_notes: "extraNotes",
+  common_mistakes: "commonMistakes",
+};
+
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTENT_VERSION = "v8-jsonb";
 
 export const maxDuration = 800;
 
@@ -75,13 +90,14 @@ const ENGLISH_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          quiz_type: { type: "string" },
+          kind: { type: "string" },     // multipleChoice | fillInBlank | listenAndPick
+          purpose: { type: "string" },  // comprehension | grammar | vocabulary
           question: { type: "string" },
           options: { type: "array", items: { type: "string" } },
           correct_index: { type: "integer" },
           explanation_en: { type: "string" },
         },
-        required: ["quiz_type", "question", "options", "correct_index", "explanation_en"],
+        required: ["kind", "purpose", "question", "options", "correct_index", "explanation_en"],
       },
     },
     info_sections: {
@@ -200,9 +216,9 @@ Teaching points: ${args.tps.map((tp) => `${tp.category}:${tp.name}`).join(", ")}
 
 1) Decide if the transcript reasonably matches the intended scene. Score 0.0-1.0.
    - 1.0 = dialogue is almost exactly what was planned
-   - 0.7 = same scene, different wording, TPs are still covered
-   - 0.5 = related but drifts, some TPs missing
-   - < 0.5 = fails, reject
+   - 0.8 = same scene, slightly different wording, all TPs clearly covered
+   - 0.7 = same scene, some TPs present but one is weak or implicit
+   - < 0.7 = fails, reject (pool item is cancelled, not sent to review)
 2) match_reason MUST be written in Turkish.
 3) SPEAKER IDENTIFICATION — this is critical:
    The transcript uses generic labels like "Speaker 0", "Speaker 1" (or sometimes both are "Speaker 0" if Whisper can't distinguish voices).
@@ -284,10 +300,20 @@ Difficulty MUST match the "${args.level}" level.
 - intermediate: Contextual distractors. Test grammar patterns.
 - advanced: Inference questions. Subtle distinctions, idioms, tone.
 
-Each quiz has:
-- quiz_type: "comprehension" | "grammar" | "vocabulary" (prefer 3 different types)
-- question: English
-- options: Exactly 4 English choices
+Each quiz has TWO independent dimensions — pick variety across all 3 quizzes.
+
+- kind (FORMAT — how the user answers): one of
+   * "multipleChoice"  → 4 text options, pick the right one
+   * "fillInBlank"     → question contains "___", options are 4 words/phrases that fit the blank
+   * "listenAndPick"   → question references hearing a line from the dialogue ("Listen — what did the barista say?"), options are 4 transcribed phrases
+   (Aim for 3 different kinds across the 3 quizzes when the dialogue allows.)
+- purpose (SEMANTIC — what skill it tests): one of
+   * "comprehension" → did the user understand what happened?
+   * "grammar"       → does the user recognize the pattern from the teaching point?
+   * "vocabulary"    → does the user know the meaning of a key word/phrase?
+   (Aim for 3 different purposes across the 3 quizzes.)
+- question: English. For "fillInBlank" use "___" as the blank marker.
+- options: Exactly 4 English choices.
 - correct_index: 0-3
 - explanation_en: English explanation of WHY the correct answer is right. Educational, level-appropriate. This will be translated into 12 languages in phase 3.
 
@@ -383,7 +409,8 @@ Return raw JSON (no markdown, no code blocks):
   "keywords": ["coffee", "order", "please"],
   "quizzes": [
     {
-      "quiz_type": "comprehension",
+      "kind": "multipleChoice",
+      "purpose": "comprehension",
       "question": "...",
       "options": ["A", "B", "C", "D"],
       "correct_index": 0,
@@ -510,7 +537,8 @@ function validateEnglish(
   for (const q of quizzes as Record<string, unknown>[]) {
     if (!q.question || !Array.isArray(q.options) || q.options.length !== 4) return "Quiz missing question or options";
     if (typeof q.correct_index !== "number" || q.correct_index < 0 || q.correct_index > 3) return "Quiz correct_index must be 0-3";
-    if (!VALID_QUIZ_TYPES.includes(q.quiz_type as string)) return `Invalid quiz_type: ${q.quiz_type}`;
+    if (!VALID_QUIZ_KINDS.includes(q.kind as string)) return `Invalid quiz kind: ${q.kind}`;
+    if (!VALID_QUIZ_PURPOSES.includes(q.purpose as string)) return `Invalid quiz purpose: ${q.purpose}`;
     if (!q.explanation_en || typeof q.explanation_en !== "string") return "Quiz missing explanation_en";
   }
 
@@ -592,26 +620,32 @@ export async function POST(req: NextRequest) {
 
   // === DUPLICATE GUARD ===
   const { rows: checkRows } = await query(
-    "SELECT id, video_id, status FROM pool_items WHERE id = $1",
+    "SELECT id, lesson_id, status FROM pool_items WHERE id = $1",
     [poolItemId]
   );
   if (checkRows.length === 0) {
     return NextResponse.json({ error: "Pool item not found" }, { status: 404 });
   }
-  if (checkRows[0].video_id) {
+  if (checkRows[0].lesson_id) {
     return NextResponse.json(
-      { error: "Content already generated for this pool item", videoId: checkRows[0].video_id },
+      { error: "Content already generated for this pool item", lessonId: checkRows[0].lesson_id },
       { status: 409 }
     );
   }
 
   // === FETCH POOL ITEM + RELATED DATA ===
   const { rows } = await query(`
-    SELECT pi.*, c.name as channel_name, c.slug as channel_slug, c.description as channel_description,
+    SELECT pi.*,
+      c.name as channel_name,
+      c.handle as channel_handle,
+      c.description as channel_description,
+      c.target_language as channel_target_language,
       (SELECT json_agg(json_build_object('id', v.id, 'name', v.name, 'slug', v.slug))
        FROM pool_item_vibes piv JOIN vibes v ON v.id = piv.vibe_id WHERE piv.pool_item_id = pi.id) as vibes,
       (SELECT json_agg(json_build_object('id', tp.id, 'name', tp.name, 'category', tp.category, 'level', tp.level, 'description', tp.description))
-       FROM pool_item_tps pit JOIN teaching_points tp ON tp.id = pit.teaching_point_id WHERE pit.pool_item_id = pi.id) as tps
+       FROM pool_item_teaching_points pit
+       JOIN teaching_points tp ON tp.id = pit.teaching_point_id
+       WHERE pit.pool_item_id = pi.id) as tps
     FROM pool_items pi
     LEFT JOIN channels c ON c.id = pi.channel_id
     WHERE pi.id = $1
@@ -675,11 +709,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid match_score from Gemini" }, { status: 500 });
   }
 
-  if (!matchResult.match) {
+  // Hard numeric gate: reject below 0.7 even if Gemini set match=true.
+  // Per product decision, low-match items are cancelled outright — no review queue.
+  const MATCH_THRESHOLD = 0.7;
+  const rejected = !matchResult.match || matchResult.match_score < MATCH_THRESHOLD;
+
+  if (rejected) {
     const cancelNote = `Match failed (${matchResult.match_score}): ${matchResult.match_reason}`;
     await logPipeline(poolItemId, "content", "warn", "Match check failed — pool item cancelled", {
       match_score: matchResult.match_score,
       match_reason: matchResult.match_reason,
+      threshold: MATCH_THRESHOLD,
     });
     await query(
       "UPDATE pool_items SET status = 'cancelled', notes = CASE WHEN notes IS NOT NULL THEN notes || E'\\n---\\n' || $1 ELSE $1 END WHERE id = $2",
@@ -738,7 +778,8 @@ export async function POST(req: NextRequest) {
     description: string;
     keywords: string[];
     quizzes: {
-      quiz_type: string;
+      kind: string;
+      purpose: string;
       question: string;
       options: string[];
       correct_index: number;
@@ -890,216 +931,194 @@ export async function POST(req: NextRequest) {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ASSEMBLE + DB INSERT (all in transaction)
+  // ASSEMBLE JSONB BLOBS (subtitles / questions / info)
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // Storage shape mirrors what backend's lesson/repo.go decodes:
+  //  - subtitles[i]: { id, start, end, speaker, text, translations:{lang→str} }
+  //  - questions[i]: { id, kind, purpose, text, options, correctIndex,
+  //                    explanations:{en+12 langs} }
+  //  - info: free-form jsonb walked by LocalizeInPlace; we use
+  //          { topics:[{id,kind,teachingPointId,title:{lang→str},body:{lang→str}}],
+  //            speakPrompts:[…], vocabulary:[], createPrompts:[] }
+  //          The selfLangKeys (title,body) collapse on read; speakPrompts stay
+  //          single-language for v1.
+
+  type Seg = { start: number; end: number; text: string; speaker?: string };
+  const enSegments: Seg[] = transcript.segments as Seg[];
+
+  const subtitlesJson = enSegments.map((seg, i) => {
+    const translations: Record<string, string> = {};
+    for (const loc of LOCALES) {
+      translations[loc] = allTranslations[loc].subtitles[i]?.text ?? "";
+    }
+    return {
+      id: `s-${i}`,
+      start: seg.start,
+      end: seg.end,
+      speaker: seg.speaker || "",
+      text: seg.text,
+      translations,
+    };
+  });
+
+  const questionsJson = english.quizzes.map((q, i) => {
+    const explanations: Record<string, string> = { en: q.explanation_en };
+    for (const loc of LOCALES) {
+      explanations[loc] = allTranslations[loc].quiz_explanations[i] ?? "";
+    }
+    return {
+      id: `q-${i}`,
+      kind: q.kind,
+      purpose: q.purpose,
+      text: q.question,
+      options: q.options,
+      correctIndex: q.correct_index,
+      explanations,
+    };
+  });
+
+  const topicsJson = english.info_sections.map((sec, i) => {
+    const title: Record<string, string> = { en: sec.title_en };
+    const body: Record<string, string> = { en: sec.body_en };
+    for (const loc of LOCALES) {
+      const entry = allTranslations[loc].info_sections[i];
+      title[loc] = entry?.title ?? "";
+      body[loc] = entry?.body ?? "";
+    }
+    return {
+      id: `t-${i}`,
+      kind: SECTION_KIND_MAP[sec.section_type] || sec.section_type,
+      teachingPointId: sec.teaching_point_id || null,
+      title,
+      body,
+    };
+  });
+
+  const speakPromptsJson = english.speaking_prompts.map((sp, i) => ({
+    id: `sp-${i}`,
+    kind: sp.prompt_type,
+    promptText: sp.prompt_text,
+    expectedText: sp.expected_text,
+    contextHint: sp.context_hint,
+  }));
+
+  const infoJson = {
+    topics: topicsJson,
+    speakPrompts: speakPromptsJson,
+    vocabulary: [] as unknown[],
+    createPrompts: [] as unknown[],
+  };
+
+  const subjectTags = english.keywords.map((k) => k.toLowerCase());
+  const targetLang = item.channel_target_language || "en";
+
+  // ═══════════════════════════════════════════════════════════════
+  // DB INSERT (transaction: lesson + 2 junctions + pool_item link)
   // ═══════════════════════════════════════════════════════════════
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // Slug uniqueness inside transaction
-    let slug = english.slug;
-    const { rows: slugCheck } = await client.query("SELECT id FROM videos WHERE slug = $1", [slug]);
-    if (slugCheck.length > 0) {
-      slug = `${slug}-${Date.now().toString(36)}`;
-    }
-
-    // 1. videos
-    const videoRes = await client.query(`
-      INSERT INTO videos (channel_id, slug, target_language, level, title, description,
-        duration_sec, status, original_script, seedance_prompt, transcript_match_score)
-      VALUES ($1, $2, 'en', $3, $4, $5, $6, 'review', $7, $8, $9)
+    // bunny_video_id + thumbnail_url are NOT NULL — placeholder until
+    // /api/upload-cdn populates them. published_at stays NULL → lesson
+    // is invisible on the iOS feed until upload-cdn flips it.
+    const lessonRes = await client.query(`
+      INSERT INTO lessons (
+        channel_id, source_topic_pack_id, bunny_video_id,
+        title, description, level, learning_language_code,
+        duration_sec, thumbnail_url, subject_tags,
+        subtitles, questions, info, interactions,
+        content_version, original_script, seedance_prompt, match_score
+      )
+      VALUES (
+        $1, $2, $3,
+        $4, $5, $6, $7,
+        $8, $9, $10,
+        $11::jsonb, $12::jsonb, $13::jsonb, '[]'::jsonb,
+        $14, $15::jsonb, $16, $17
+      )
       RETURNING id
     `, [
       item.channel_id,
-      slug,
-      item.level,
+      poolItemId,
+      "",
       english.title,
       english.description,
+      item.level,
+      targetLang,
       Math.round(transcript.duration || 15),
+      "",
+      subjectTags,
+      JSON.stringify(subtitlesJson),
+      JSON.stringify(questionsJson),
+      JSON.stringify(infoJson),
+      CONTENT_VERSION,
       JSON.stringify(transcript.segments),
       item.seedance_prompt,
       matchResult.match_score,
     ]);
-    const videoId = videoRes.rows[0].id;
+    const lessonId: string = lessonRes.rows[0].id;
 
-    // 2. transcript
-    await client.query(`
-      INSERT INTO transcripts (video_id, language, segments, full_text)
-      VALUES ($1, 'en', $2, $3)
-    `, [videoId, JSON.stringify(transcript.segments), transcript.full_text]);
-
-    // 3. subtitles — English from transcript + 12 translated locales
-    {
-      const subValues: unknown[] = [];
-      const subPlaceholders: string[] = [];
-      let idx = 1;
-
-      // English (from original transcript)
-      subPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3})`);
-      subValues.push(videoId, "en", true, JSON.stringify(transcript.segments));
-      idx += 4;
-
-      // 12 translated locales
-      for (const loc of LOCALES) {
-        const entry = allTranslations[loc];
-        subPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3})`);
-        subValues.push(videoId, loc, false, JSON.stringify(entry.subtitles));
-        idx += 4;
-      }
-
-      await client.query(`
-        INSERT INTO subtitles (video_id, locale, is_target_language, segments)
-        VALUES ${subPlaceholders.join(", ")}
-      `, subValues);
-    }
-
-    // 4. quizzes (with combined explanations: EN + 12 translated)
-    {
-      const quizValues: unknown[] = [];
-      const quizPlaceholders: string[] = [];
-      let idx = 1;
-      for (let i = 0; i < english.quizzes.length; i++) {
-        const q = english.quizzes[i];
-        const explanations: Record<string, string> = {};
-        for (const loc of LOCALES) {
-          explanations[loc] = allTranslations[loc].quiz_explanations[i];
-        }
-        quizPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5}, $${idx + 6})`);
-        quizValues.push(
-          videoId,
-          i + 1,
-          q.quiz_type,
-          q.question,
-          JSON.stringify(q.options),
-          q.correct_index,
-          JSON.stringify(explanations),
-        );
-        idx += 7;
-      }
-      await client.query(`
-        INSERT INTO quizzes (video_id, quiz_order, quiz_type, question, options, correct_index, explanations)
-        VALUES ${quizPlaceholders.join(", ")}
-      `, quizValues);
-    }
-
-    // 5. info sections + locales (en + 12 translated)
-    for (let i = 0; i < english.info_sections.length; i++) {
-      const sec = english.info_sections[i];
-      const secRes = await client.query(`
-        INSERT INTO info_sections (video_id, section_type, teaching_point_id, section_order)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id
-      `, [videoId, sec.section_type, sec.teaching_point_id || null, i + 1]);
-      const sectionId = secRes.rows[0].id;
-
-      const locValues: unknown[] = [];
-      const locPlaceholders: string[] = [];
-      let idx = 1;
-
-      // English
-      locPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3})`);
-      locValues.push(sectionId, "en", sec.title_en, sec.body_en);
-      idx += 4;
-
-      // 12 translations
-      for (const loc of LOCALES) {
-        const locEntry = allTranslations[loc].info_sections[i];
-        locPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3})`);
-        locValues.push(sectionId, loc, locEntry.title, locEntry.body);
-        idx += 4;
-      }
-
-      await client.query(`
-        INSERT INTO info_section_locales (info_section_id, locale, title, body)
-        VALUES ${locPlaceholders.join(", ")}
-      `, locValues);
-    }
-
-    // 6. speaking prompts
-    {
-      const spValues: unknown[] = [];
-      const spPlaceholders: string[] = [];
-      let idx = 1;
-      for (let i = 0; i < english.speaking_prompts.length; i++) {
-        const sp = english.speaking_prompts[i];
-        spPlaceholders.push(`($${idx}, $${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5})`);
-        spValues.push(videoId, i + 1, sp.prompt_type, sp.prompt_text, sp.expected_text || null, sp.context_hint || null);
-        idx += 6;
-      }
-      await client.query(`
-        INSERT INTO speaking_prompts (video_id, prompt_order, prompt_type, prompt_text, expected_text, context_hint)
-        VALUES ${spPlaceholders.join(", ")}
-      `, spValues);
-    }
-
-    // 7. video ↔ TPs
     if (tps.length > 0) {
-      const tpValues: unknown[] = [];
-      const tpPlaceholders: string[] = [];
+      const tpVals: unknown[] = [];
+      const tpPh: string[] = [];
       let idx = 1;
       for (const tp of tps) {
-        tpPlaceholders.push(`($${idx}, $${idx + 1})`);
-        tpValues.push(videoId, tp.id);
+        tpPh.push(`($${idx}, $${idx + 1})`);
+        tpVals.push(lessonId, tp.id);
         idx += 2;
       }
-      await client.query(`
-        INSERT INTO video_teaching_points (video_id, teaching_point_id)
-        VALUES ${tpPlaceholders.join(", ")}
-      `, tpValues);
+      await client.query(
+        `INSERT INTO lesson_teaching_points (lesson_id, teaching_point_id)
+         VALUES ${tpPh.join(", ")}
+         ON CONFLICT DO NOTHING`,
+        tpVals,
+      );
     }
 
-    // 8. video ↔ vibes
     if (vibes.length > 0) {
-      const vValues: unknown[] = [];
-      const vPlaceholders: string[] = [];
+      const vVals: unknown[] = [];
+      const vPh: string[] = [];
       let idx = 1;
       for (const v of vibes) {
-        vPlaceholders.push(`($${idx}, $${idx + 1})`);
-        vValues.push(videoId, v.id);
+        vPh.push(`($${idx}, $${idx + 1})`);
+        vVals.push(lessonId, v.id);
         idx += 2;
       }
-      await client.query(`
-        INSERT INTO video_vibes (video_id, vibe_id)
-        VALUES ${vPlaceholders.join(", ")}
-      `, vValues);
+      await client.query(
+        `INSERT INTO lesson_vibes (lesson_id, vibe_id)
+         VALUES ${vPh.join(", ")}
+         ON CONFLICT DO NOTHING`,
+        vVals,
+      );
     }
 
-    // 9. keywords
-    if (english.keywords.length > 0) {
-      const kwValues: unknown[] = [];
-      const kwPlaceholders: string[] = [];
-      let idx = 1;
-      for (const kw of english.keywords) {
-        kwPlaceholders.push(`($${idx}, $${idx + 1})`);
-        kwValues.push(videoId, kw.toLowerCase());
-        idx += 2;
-      }
-      await client.query(`
-        INSERT INTO video_keywords (video_id, keyword)
-        VALUES ${kwPlaceholders.join(", ")}
-      `, kwValues);
-    }
-
-    // 10. link pool item
+    // Leave status='processing' — upload-cdn flips it to 'completed' once
+    // the Bunny upload + thumbnail succeed. lesson_id is the link.
     await client.query(
-      "UPDATE pool_items SET status = 'completed', video_id = $1 WHERE id = $2",
-      [videoId, poolItemId]
+      `UPDATE pool_items
+       SET lesson_id = $1, status = 'processing', updated_at = now()
+       WHERE id = $2`,
+      [lessonId, poolItemId],
     );
 
     await client.query("COMMIT");
 
-    await logPipeline(poolItemId, "content", "info", "DB transaction committed — content saved", {
-      video_id: videoId,
+    await logPipeline(poolItemId, "content", "info", "DB transaction committed — lesson row created", {
+      lesson_id: lessonId,
       title: english.title,
+      tps: tps.length,
+      vibes: vibes.length,
     });
 
     return NextResponse.json({
       match: true,
       score: matchResult.match_score,
-      videoId,
+      lessonId,
       title: english.title,
-      message: "All content generated and saved (3-phase pipeline)",
+      message: "Content generated, lesson row created — run /api/upload-cdn next",
     });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch { /* dead connection */ }

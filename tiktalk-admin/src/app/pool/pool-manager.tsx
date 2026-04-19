@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
-import { createPoolItem, deletePoolItem, toggleVideoStatus } from "./actions";
+import { createPoolItem, deletePoolItem, toggleLessonStatus } from "./actions";
 
 interface SelectOption {
   id: string;
@@ -63,8 +63,8 @@ interface PoolItem {
   notes: string | null;
   seedance_prompt: string | null;
   video_file: string | null;
-  video_id: string | null;
-  video_status: string | null;
+  lesson_id: string | null;
+  lesson_status: string | null;
   transcript: Transcript | null;
   vibes: { id: string; name: string }[] | null;
   tps: { id: string; name: string; category: string; level: string }[] | null;
@@ -163,7 +163,7 @@ export function PoolManager({
           }
 
           // Step 2: Content generation
-          if (!data.video_id) {
+          if (!data.lesson_id) {
             setPipelineStatus((prev) => ({ ...prev, [poolItemId]: "🧠 İçerik üretiliyor..." }));
             const cRes = await fetch("/api/content", {
               method: "POST",
@@ -535,7 +535,7 @@ export function PoolManager({
           const canWhisper =
             item.video_file && item.status === "completed" && !item.transcript;
           const canGenerateContent =
-            item.transcript && item.status === "completed" && !item.video_id;
+            item.transcript && item.status === "completed" && !item.lesson_id;
           const isExpanded = expandedId === item.id;
 
           // Progress indicators
@@ -543,7 +543,7 @@ export function PoolManager({
             { label: "Prompt", done: !!item.seedance_prompt },
             { label: "Video", done: !!item.video_file },
             { label: "Transcript", done: !!item.transcript },
-            { label: "Content", done: !!item.video_id },
+            { label: "Content", done: !!item.lesson_id },
           ];
 
           return (
@@ -557,7 +557,7 @@ export function PoolManager({
                 onClick={() => {
                   const next = isExpanded ? null : item.id;
                   setExpandedId(next);
-                  if (next && item.video_id) fetchVideoContent(item.video_id);
+                  if (next && item.lesson_id) fetchVideoContent(item.lesson_id);
                 }}
               >
                 {canStart && (
@@ -640,28 +640,28 @@ export function PoolManager({
                         {contentLoading === item.id ? "Generating..." : "Generate Content"}
                       </button>
                     )}
-                    {item.video_id && (
+                    {item.lesson_id && (
                       <>
-                        {item.video_status === "published" ? (
+                        {item.lesson_status === "published" ? (
                           <button
-                            onClick={() => toggleVideoStatus(item.video_id!, "archived")}
+                            onClick={() => toggleLessonStatus(item.lesson_id!, "archived")}
                             className="px-3 py-1.5 bg-green-100 border border-green-300 text-green-700 text-xs rounded-md hover:bg-red-50 hover:border-red-300 hover:text-red-600 transition-colors"
                           >
                             Published — Archive?
                           </button>
-                        ) : item.video_status === "archived" ? (
+                        ) : item.lesson_status === "archived" ? (
                           <button
-                            onClick={() => toggleVideoStatus(item.video_id!, "published")}
+                            onClick={() => toggleLessonStatus(item.lesson_id!, "published")}
                             className="px-3 py-1.5 bg-zinc-100 border border-zinc-300 text-zinc-500 text-xs rounded-md hover:bg-green-50 hover:border-green-300 hover:text-green-600 transition-colors"
                           >
                             Archived — Publish?
                           </button>
                         ) : (
                           <button
-                            onClick={() => toggleVideoStatus(item.video_id!, "published")}
+                            onClick={() => toggleLessonStatus(item.lesson_id!, "published")}
                             className="px-3 py-1.5 bg-amber-50 border border-amber-200 text-amber-700 text-xs rounded-md hover:bg-green-50 hover:border-green-300 hover:text-green-600 transition-colors"
                           >
-                            {item.video_status} — Publish?
+                            {item.lesson_status} — Publish?
                           </button>
                         )}
                       </>
@@ -754,9 +754,9 @@ export function PoolManager({
                   </div>
 
                   {/* === CONTENT TABS === */}
-                  {item.video_id && (() => {
-                    const vc = videoContent[item.video_id!];
-                    if (contentFetching === item.video_id) {
+                  {item.lesson_id && (() => {
+                    const vc = videoContent[item.lesson_id!];
+                    if (contentFetching === item.lesson_id) {
                       return <p className="text-xs text-zinc-400">Loading content...</p>;
                     }
                     if (!vc) return null;

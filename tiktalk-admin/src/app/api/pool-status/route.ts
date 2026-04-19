@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { rows } = await query(
-    "SELECT id, status, video_file, transcript IS NOT NULL as has_transcript, video_id FROM pool_items WHERE id = $1",
+    "SELECT id, status, video_file, transcript IS NOT NULL as has_transcript, lesson_id FROM pool_items WHERE id = $1",
     [id]
   );
 

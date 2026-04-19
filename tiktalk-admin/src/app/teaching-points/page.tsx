@@ -7,7 +7,7 @@ export default async function TeachingPointsPage() {
   const tpRes = await query(`
     SELECT tp.id, tp.category, tp.subcategory, tp.name, tp.level, tp.description,
       tp.created_at,
-      COALESCE((SELECT COUNT(*) FROM pool_item_tps pit WHERE pit.teaching_point_id = tp.id), 0)::int AS usage_count
+      COALESCE((SELECT COUNT(*) FROM pool_item_teaching_points pit WHERE pit.teaching_point_id = tp.id), 0)::int AS usage_count
     FROM teaching_points tp
     ORDER BY tp.category, tp.subcategory NULLS FIRST, tp.level, tp.name
   `);

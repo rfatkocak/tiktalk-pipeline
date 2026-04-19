@@ -1,7 +1,7 @@
 import { query } from "@/lib/db";
 
 export type LogLevel = "info" | "warn" | "error";
-export type LogPhase = "generate" | "seedance" | "whisper" | "content" | "cdn" | "pipeline";
+export type LogPhase = "generate" | "seedance" | "whisper" | "content" | "cdn" | "upload-cdn" | "pipeline";
 
 let initPromise: Promise<void> | null = null;
 

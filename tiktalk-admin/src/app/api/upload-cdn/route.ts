@@ -1,84 +1,163 @@
+// POST /api/upload-cdn
+//
+// Last stage of the content pipeline. By now /api/content has created the
+// `lessons` row (with bunny_video_id set as a placeholder). This endpoint:
+//   1. Reads the local MP4 from seedance-automation/downloads/
+//   2. Uploads to Bunny Stream (transcodes, returns guid)
+//   3. Generates a mid-frame thumbnail with ffmpeg
+//   4. Sets that thumbnail on the Bunny video
+//   5. UPDATEs lessons.bunny_video_id to the real guid
+//   6. Marks pool_item complete + publishes lesson
+//
+// Backend signs playback/thumbnail URLs at read time from bunny_video_id —
+// pipeline never deals with URLs, only guids.
+
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { query } from "@/lib/db";
-import { uploadToBunny } from "@/lib/bunny";
+import { uploadLessonVideo, setCustomThumbnail } from "@/lib/bunny";
 import { logPipeline } from "@/lib/pipeline-log";
 
-const DOWNLOAD_DIR = path.join(process.cwd(), "..", "seedance-automation", "downloads");
+const DOWNLOAD_DIR = path.join(
+  process.cwd(),
+  "..",
+  "seedance-automation",
+  "downloads"
+);
+
+export const maxDuration = 600;
 
 export async function POST(req: NextRequest) {
   const { poolItemId } = await req.json();
+  if (!poolItemId) {
+    return NextResponse.json({ error: "poolItemId required" }, { status: 400 });
+  }
 
-  // Get pool item + video
+  // Fetch pool_item + linked lesson
   const { rows } = await query(
-    `SELECT pi.video_id, pi.video_file, v.slug
+    `SELECT pi.lesson_id, pi.video_file
      FROM pool_items pi
-     JOIN videos v ON v.id = pi.video_id
      WHERE pi.id = $1`,
     [poolItemId]
   );
-
   if (rows.length === 0) {
-    return NextResponse.json({ error: "Pool item or video not found" }, { status: 404 });
+    return NextResponse.json({ error: "pool_item not found" }, { status: 404 });
   }
-
-  const { video_id, video_file, slug } = rows[0];
-
+  const { lesson_id, video_file } = rows[0];
+  if (!lesson_id) {
+    return NextResponse.json(
+      { error: "no linked lesson — run /api/content first" },
+      { status: 400 }
+    );
+  }
   if (!video_file) {
-    return NextResponse.json({ error: "No video file" }, { status: 400 });
+    return NextResponse.json({ error: "no video_file" }, { status: 400 });
   }
 
   const videoPath = path.join(DOWNLOAD_DIR, video_file);
   if (!fs.existsSync(videoPath)) {
-    return NextResponse.json({ error: `File not found: ${video_file}` }, { status: 404 });
-  }
-
-  // 1. Generate thumbnail with ffmpeg (frame at 1 second)
-  const thumbPath = path.join(DOWNLOAD_DIR, `thumb_${slug}.jpg`);
-  try {
-    execSync(
-      `ffmpeg -y -i "${videoPath}" -ss 1 -vframes 1 -q:v 2 "${thumbPath}"`,
-      { timeout: 15000, stdio: "pipe" }
+    return NextResponse.json(
+      { error: `file not found: ${video_file}` },
+      { status: 404 }
     );
-  } catch (err) {
-    await logPipeline(poolItemId, "cdn", "error", `ffmpeg thumbnail failed: ${(err as Error).message}`);
-    return NextResponse.json({ error: "Thumbnail generation failed" }, { status: 500 });
   }
 
   try {
-    await logPipeline(poolItemId, "cdn", "info", "Uploading video + thumbnail to Bunny CDN");
-
-    // 2. Upload video to Bunny CDN
+    // 1. Upload video to Bunny Stream
+    await logPipeline(poolItemId, "upload-cdn", "info", "uploading video to Bunny");
     const videoBuffer = fs.readFileSync(videoPath);
-    const videoUrl = await uploadToBunny(
-      videoBuffer,
-      `videos/${slug}.mp4`
-    );
+    const title = `lesson-${String(lesson_id).slice(0, 8)}`;
+    const bunnyGuid = await uploadLessonVideo(videoBuffer, title);
+    await logPipeline(poolItemId, "upload-cdn", "info", `video uploaded, guid=${bunnyGuid}`);
 
-    // 3. Upload thumbnail to Bunny CDN
-    const thumbBuffer = fs.readFileSync(thumbPath);
-    const thumbnailUrl = await uploadToBunny(
-      thumbBuffer,
-      `thumbnails/${slug}.jpg`
-    );
+    // 2. Read the real duration (ffprobe) so lessons.duration_sec is accurate.
+    let durationSec = 15;
+    try {
+      const durOut = execSync(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`,
+        { encoding: "utf8" }
+      ).trim();
+      const parsed = parseFloat(durOut);
+      if (!isNaN(parsed) && parsed > 0) {
+        durationSec = parsed;
+      }
+    } catch {
+      /* fall back to 15 */
+    }
 
-    // 4. Update video record
+    // 3. Mid-frame thumbnail via ffmpeg.
+    const thumbPath = path.join(DOWNLOAD_DIR, `thumb-${bunnyGuid}.jpg`);
+    const midSec = (durationSec / 2).toFixed(2);
+    try {
+      execSync(
+        `ffmpeg -y -ss ${midSec} -i "${videoPath}" -vframes 1 -q:v 2 "${thumbPath}"`,
+        { stdio: "pipe", timeout: 15000 }
+      );
+    } catch (err) {
+      await logPipeline(
+        poolItemId,
+        "upload-cdn",
+        "warn",
+        `ffmpeg thumbnail failed: ${(err as Error).message}`
+      );
+    }
+
+    // 4. Upload custom thumbnail to Bunny
+    if (fs.existsSync(thumbPath)) {
+      try {
+        const thumbBuf = fs.readFileSync(thumbPath);
+        await setCustomThumbnail(bunnyGuid, thumbBuf, "image/jpeg");
+        fs.unlinkSync(thumbPath);
+      } catch (err) {
+        await logPipeline(
+          poolItemId,
+          "upload-cdn",
+          "warn",
+          `thumbnail upload failed: ${(err as Error).message}`
+        );
+      }
+    }
+
+    // 5. Persist guid + duration on the lesson row
     await query(
-      `UPDATE videos SET video_url = $1, thumbnail_url = $2 WHERE id = $3`,
-      [videoUrl, thumbnailUrl, video_id]
+      `UPDATE lessons
+       SET bunny_video_id = $1,
+           duration_sec   = $2,
+           updated_at     = now()
+       WHERE id = $3`,
+      [bunnyGuid, durationSec, lesson_id]
     );
 
-    // Clean up temp thumbnail
-    try { fs.unlinkSync(thumbPath); } catch { /* ignore */ }
+    // 6. Publish the lesson and mark pool_item complete
+    await query(
+      `UPDATE lessons SET published_at = COALESCE(published_at, now())
+       WHERE id = $1`,
+      [lesson_id]
+    );
+    await query(
+      `UPDATE pool_items SET status = 'completed', updated_at = now()
+       WHERE id = $1`,
+      [poolItemId]
+    );
+    await logPipeline(poolItemId, "upload-cdn", "info", "pipeline complete");
 
-    await logPipeline(poolItemId, "cdn", "info", "CDN upload finished", { videoUrl, thumbnailUrl });
-    return NextResponse.json({ videoUrl, thumbnailUrl });
+    return NextResponse.json({
+      lessonId: lesson_id,
+      bunnyVideoId: bunnyGuid,
+      durationSec,
+    });
   } catch (err) {
-    // Clean up temp thumbnail on error too
-    try { fs.unlinkSync(thumbPath); } catch { /* ignore */ }
-    await logPipeline(poolItemId, "cdn", "error", `CDN upload failed: ${(err as Error).message}`);
-    return NextResponse.json({ error: "CDN upload failed: " + (err as Error).message }, { status: 500 });
+    await logPipeline(
+      poolItemId,
+      "upload-cdn",
+      "error",
+      `upload-cdn failed: ${(err as Error).message}`
+    );
+    return NextResponse.json(
+      { error: "upload-cdn failed: " + (err as Error).message },
+      { status: 500 }
+    );
   }
 }
