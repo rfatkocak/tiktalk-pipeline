@@ -1,9 +1,29 @@
 const path = require('path');
+const fs = require('fs');
 const { Pool } = require('pg');
 const { launchBrowser, closeBrowser, isLoggedIn, generateVideo } = require('./automation');
 
+// Env loading — when spawned from /api/seedance the parent Next.js process
+// has DATABASE_URL in process.env already. When run standalone (`node
+// seedance-runner.js …`) read tiktalk-admin/.env.local as a fallback so we
+// don't need to duplicate the connection string.
+if (!process.env.DATABASE_URL) {
+  const envPath = path.join(__dirname, '..', 'tiktalk-admin', '.env.local');
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+  }
+}
+
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL missing — set it in tiktalk-admin/.env.local or export it.');
+  process.exit(1);
+}
+
 const db = new Pool({
-  connectionString: 'postgresql://tiktalk:23uVSG28KT4Mrdz4J4bep6Unr678sQln@91.98.46.133:35432/tiktalk',
+  connectionString: process.env.DATABASE_URL,
   max: 3,
 });
 
