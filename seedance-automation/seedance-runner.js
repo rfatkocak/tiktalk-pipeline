@@ -82,14 +82,18 @@ async function main() {
     throw err;
   }
 
-  // Check login
+  // Check login — runner is spawned non-interactively from /api/seedance,
+  // so don't block on stdin. Fail fast with a clear message; user fixes it
+  // by running `npm run login` once and retrying.
   const loggedIn = await isLoggedIn();
   if (!loggedIn) {
     for (const item of pendingItems) {
-      await logEvent(item.id, 'warn', 'Dreamina login missing — waiting for manual login');
+      await logEvent(item.id, 'error', 'Dreamina login missing — run `npm run login` first');
+      await markFailed(item.id, 'Dreamina login missing — run `npm run login` first');
     }
-    console.log('Giris yapilmamis! Lutfen tarayicida giris yap ve ENTER bas.');
-    await new Promise(resolve => process.stdin.once('data', resolve));
+    await closeBrowser();
+    console.error('Giris yapilmamis! Once `npm run login` calistirip Dreamina profilini kaydet.');
+    process.exit(2);
   }
 
   for (let i = 0; i < pendingItems.length; i++) {
