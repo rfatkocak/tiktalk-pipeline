@@ -1,7 +1,7 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 const API_KEY = process.env.GEMINI_API_KEY!;
-const MODEL = "gemini-3.1-flash-preview";
+const MODEL = "gemini-3-flash-preview";
 
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
