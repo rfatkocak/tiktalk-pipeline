@@ -1,7 +1,7 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 const API_KEY = process.env.GEMINI_API_KEY!;
-const MODEL = "gemini-3-flash-preview";
+const MODEL = "gemini-2.5-flash";
 
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
@@ -27,6 +27,10 @@ export type GeminiConfig = {
   maxOutputTokens: number;
   schema?: Record<string, unknown>;
   thinkingLevel?: "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
+  // Explicit thinking budget in tokens. 0 = disable thinking entirely
+  // (frees the whole maxOutputTokens for response). Overrides thinkingLevel
+  // when both are set.
+  thinkingBudget?: number;
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -58,7 +62,9 @@ async function callGeminiOnce<T>(cfg: GeminiConfig): Promise<GeminiResult<T>> {
         maxOutputTokens: cfg.maxOutputTokens,
         responseMimeType: "application/json",
         ...(cfg.schema ? { responseJsonSchema: cfg.schema } : {}),
-        ...(cfg.thinkingLevel
+        ...(typeof cfg.thinkingBudget === "number"
+          ? { thinkingConfig: { thinkingBudget: cfg.thinkingBudget } }
+          : cfg.thinkingLevel
           ? { thinkingConfig: { thinkingLevel: cfg.thinkingLevel as ThinkingLevel } }
           : {}),
         abortSignal: controller.signal,
