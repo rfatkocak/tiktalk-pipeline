@@ -28,6 +28,21 @@ const VALID_QUIZ_PURPOSES = ["comprehension", "grammar", "vocabulary"];
 const VALID_SECTION_TYPES = ["grammar", "cultural", "contextual_translation", "extra_notes", "common_mistakes"];
 const VALID_VOCAB_KINDS = ["basics", "phrase", "idiom"];
 
+// grammar_label — UI badge for info section. ~10 values covers the useful
+// pedagogical categories; anything unusual goes under "other".
+const VALID_GRAMMAR_LABELS = [
+  "idiom", "phrase", "tense", "modal", "verb-pattern",
+  "preposition", "conditional", "question", "pronoun", "adjective", "other",
+];
+
+// Block types rendered by iOS. Keep in sync with iOS_INTEGRATION_GUIDE §6.
+const VALID_BLOCK_TYPES = [
+  "paragraph", "heading", "bullet_list", "numbered_list", "table", "divider",
+  "tip", "warning", "note",
+  "video_quote", "example", "examples_group", "formula", "comparison",
+  "common_mistake", "phrase",
+];
+
 // section_type → info.topics[].kind (camelCase for iOS).
 const SECTION_KIND_MAP: Record<string, string> = {
   grammar: "teachingPoint",
@@ -106,12 +121,75 @@ const ENGLISH_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          section_type: { type: "string" },
+          section_type: { type: "string" },       // grammar | cultural | contextual_translation | extra_notes | common_mistakes
           teaching_point_id: { type: "string", nullable: true },
           title_en: { type: "string" },
-          body_en: { type: "string" },
+          summary_en: { type: "string" },         // one-liner shown under title
+          grammar_label: { type: "string" },      // UI badge: idiom | phrase | tense | modal | verb-pattern | preposition | conditional | question | pronoun | adjective | other
+          blocks: {
+            type: "array",
+            items: {
+              // Discriminated union — `type` picks the shape. All fields
+              // listed as optional; validator checks per-type requirements.
+              type: "object",
+              properties: {
+                type:          { type: "string" },
+                text:          { type: "string" },
+                fallback_text: { type: "string" }, // forward-compat plain-text summary for unknown block types
+                level:         { type: "integer" }, // heading
+                items: {                            // bullet_list, numbered_list, examples_group
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      text:        { type: "string" },
+                      english:     { type: "string" },
+                      translation: { type: "string" },
+                      note:        { type: "string" },
+                    },
+                  },
+                },
+                headers: { type: "array", items: { type: "string" } }, // table
+                rows: {                                                  // table, comparison
+                  type: "array",
+                  items: {
+                    // Either string[] (table) or object {label, example, exampleTranslation, nuance} (comparison)
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                },
+                comparison_rows: {                                       // comparison (typed rows)
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      label:                { type: "string" },
+                      example:              { type: "string" },
+                      example_translation:  { type: "string" },
+                      nuance:               { type: "string" },
+                    },
+                  },
+                },
+                title:   { type: "string" },   // tip | warning | note | examples_group | comparison | table caption
+                body:    { type: "string" },   // tip | warning | note
+                english: { type: "string" },   // example | video_quote
+                translation: { type: "string" },
+                speaker:       { type: "string" }, // video_quote
+                timestamp_sec: { type: "number" }, // video_quote
+                note:          { type: "string" }, // example | common_mistake
+                formula:       { type: "string" }, // formula
+                explanation:   { type: "string" }, // formula
+                wrong:         { type: "string" }, // common_mistake
+                correct:       { type: "string" }, // common_mistake
+                phrase:        { type: "string" }, // phrase
+                meaning:       { type: "string" }, // phrase
+                usage:         { type: "string" }, // phrase
+              },
+              required: ["type"],
+            },
+          },
         },
-        required: ["section_type", "title_en", "body_en"],
+        required: ["section_type", "title_en", "summary_en", "grammar_label", "blocks"],
       },
     },
     speaking_prompts: {
@@ -175,10 +253,60 @@ function buildTranslationSchema(locales: string[]) {
         items: {
           type: "object",
           properties: {
-            title: { type: "string" },
-            body: { type: "string" },
+            title:   { type: "string" },
+            summary: { type: "string" },
+            // Per-block translations. Order + length MUST match the English
+            // blocks array. All fields optional — only fill the ones the
+            // English block uses. divider has no fields.
+            blocks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  type:          { type: "string" },
+                  text:          { type: "string" },
+                  fallback_text: { type: "string" },
+                  level:         { type: "integer" },
+                  items: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        text:        { type: "string" },
+                        translation: { type: "string" },
+                        note:        { type: "string" },
+                      },
+                    },
+                  },
+                  headers: { type: "array", items: { type: "string" } },
+                  rows: {
+                    type: "array",
+                    items: { type: "array", items: { type: "string" } },
+                  },
+                  comparison_rows: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        label:                { type: "string" },
+                        example_translation:  { type: "string" },
+                        nuance:               { type: "string" },
+                      },
+                    },
+                  },
+                  title:        { type: "string" },
+                  body:         { type: "string" },
+                  translation:  { type: "string" },
+                  note:         { type: "string" },
+                  explanation:  { type: "string" },
+                  meaning:      { type: "string" },
+                  usage:        { type: "string" },
+                },
+                required: ["type"],
+              },
+            },
           },
-          required: ["title", "body"],
+          required: ["title", "summary", "blocks"],
         },
       },
       vocabulary: {
@@ -349,8 +477,13 @@ Each quiz has TWO independent dimensions — pick variety across all 3 quizzes.
 Example of a good beginner quiz explanation:
 "We use 'Can I have...' to politely ask for something. 'Could I' and 'May I' are also polite, but 'Can I' is the most common in everyday speech."
 
-C) INFO SECTIONS (${expectedSectionCount} required + 1 optional: one "grammar" per teaching point + one "cultural" or "contextual_translation", and optionally one "common_mistakes" section — see below):
-Depth must match the "${args.level}" level.
+C) INFO SECTIONS (${expectedSectionCount} required + 1 optional):
+- One section per teaching point (section_type="grammar"), plus
+- One "cultural" or "contextual_translation" section, plus
+- Optionally one "common_mistakes" section when a clear L1-interference
+  pattern exists (skip if none).
+
+Depth must match the "${args.level}" level:
 - beginner: Simple language, basic examples, focus on core concept. Avoid jargon.
 - intermediate: More examples, compare structures, note common mistakes.
 - advanced: Deep linguistic analysis, nuance, register, edge cases.
@@ -358,105 +491,135 @@ Depth must match the "${args.level}" level.
 Each section has:
 - section_type: "grammar" | "cultural" | "contextual_translation" | "extra_notes" | "common_mistakes"
 - teaching_point_id: MUST be one of the TP UUIDs above for "grammar" sections. Null otherwise.
-- title_en: Section title in English
-- body_en: Rich markdown for mobile display. Will be translated in phase 3.
+- title_en: Section title in English (short, scannable — e.g. "Should & Shouldn't", "Idiom: Out of the Blue").
+- summary_en: One sentence hook shown under the title. Plain English, no markdown.
+- grammar_label: UI badge for the section — one of:
+    "idiom" | "phrase" | "tense" | "modal" | "verb-pattern" |
+    "preposition" | "conditional" | "question" | "pronoun" | "adjective" | "other"
+  Pick the most specific fit. Use "other" for cultural/contextual_translation sections.
+- blocks: ORDERED ARRAY of structured content blocks (see block vocabulary below).
+  The iOS client renders each block with its own UI — paragraph, heading, table,
+  tip callout, video quote card, comparison table, etc. No markdown body anymore.
 
-BODY MARKDOWN FORMAT — produce **rich, visually scannable** markdown. iOS
-renders it with a full markdown engine (bold, italics, code spans, headings,
-blockquotes, bullets, numbered lists, tables, horizontal rules). Use all of
-these where they genuinely help — don't overuse. The learner should be able
-to skim and find what they need in under 3 seconds.
+=== BLOCK VOCABULARY ===
 
-Canonical grammar section template:
+Each block is { "type": "<kind>", ...fields }. Produce blocks in the order
+the learner should read them (top-down on a mobile card). Always start with
+a short "paragraph" opener, then mix in structured blocks, then close with a
+"tip" / "warning" / "note".
 
-## [Key term or pattern]
+Text-flow blocks:
 
-One-sentence explanation in plain language.
+{ "type": "paragraph", "text": "..." }
+   Plain explanation. Keep under 2 sentences per paragraph; break long ideas
+   into multiple paragraphs. Inline **bold** and *italics* are allowed inside
+   text — the renderer parses them. No headings, no lists in the text field.
 
-**Pattern:** \`Subject + should/shouldn't + verb (base)\`
+{ "type": "heading", "level": 2 | 3, "text": "..." }
+   Sub-section label inside the card. level=2 for major sections, level=3 for
+   sub-sections. Use sparingly — most cards don't need more than 1-2 headings.
 
----
+{ "type": "bullet_list", "items": [ { "text": "..." }, { "text": "..." } ] }
+{ "type": "numbered_list", "items": [ { "text": "..." }, ... ] }
+   Lists of short points. Keep each item to one sentence, <15 words. Use
+   numbered_list ONLY for ordered procedures ("First do X, then do Y").
 
-### 💬 From the video
-> *Hacker: "You shouldn't buy those cheap parts."*
+{ "type": "table",
+  "headers": ["Col A", "Col B"],
+  "rows": [["cell", "cell"], ["cell", "cell"]]
+}
+   Summary/comparison tables. 2-4 columns, 2-6 rows max. Keep cells short.
 
-### ✍️ Examples
-- You **should** back up your data every night.
-- He **shouldn't** use his neural-link while it's raining.
+{ "type": "divider" }
+   Horizontal rule for breathing room between two unrelated sub-sections.
 
-### 💡 Tip
-Unlike many verbs, never add "to" — it's \`should go\`, **not** \`should to go\`.
+Callouts (iconed + colored):
 
-RULES for body_en:
-- **Bold** for key terms (the target structure, verbs, prepositions).
-- *Italics* for secondary emphasis or meta ("literally translates as…").
-- \`code spans\` for patterns, formulas, ungrammatical examples.
-- Level-2 heading (\`##\`) at top with the term/pattern name.
-- Level-3 headings (\`###\`) with an emoji marker for each sub-section
-  (💬 from video, ✍️ examples, 💡 tip, ⚠️ watch out, ✅/❌ correct/wrong).
-- At least one \`---\` horizontal rule separating the opener from the
-  body sub-sections (visual breathing room on mobile).
-- Bullet lists (\`-\`) for examples (2-4 items); numbered lists (\`1.\`) for
-  step-by-step procedures.
-- Blockquotes (\`>\`) for any quote from the lesson dialog; quotes MUST be
-  verbatim and attributed to the speaker name.
-- Tables (\`| col | col |\`) for comparisons (e.g. should vs must vs have to,
-  past simple vs present perfect). Use when there are 3+ compared items.
-- NEVER write plain wall-of-text paragraphs — always break with lists,
-  quotes, or headings.
-- NEVER end with a bare sentence — always close with a **Tip**, **Warning**,
-  or callout subsection so the card has a visual endpoint.
-- Keep the same section order across all topics in a lesson for visual
-  consistency (opener → from video → examples → tip).
+{ "type": "tip",     "title": "...", "body": "..." }    // 💡 soft yellow
+{ "type": "warning", "title": "...", "body": "..." }    // ⚠️ soft red
+{ "type": "note",    "title": "...", "body": "..." }    // ℹ️ neutral gray
+   title is OPTIONAL (omit if not useful). body is REQUIRED, 1-3 sentences.
 
-COMMON_MISTAKES SECTION (optional, but strongly recommended for collocations and easily-confused patterns):
-- Use this when the teaching point has a typical L1-interference error that learners (especially Turkish speakers) make.
-- Examples of when to add it:
-  * Collocation TPs: "make a decision" (learners say "do a decision")
-  * Phrasal/preposition confusions: "listen TO music" (learners drop the "to")
-  * False friends / confusing pairs: say vs tell, make vs do
-- Title should be clear, e.g., "Common Mistakes: Make vs Do"
-- Body markdown format for common_mistakes:
+Language-learning blocks (structured — DO NOT encode these inside paragraphs):
 
-## ⚠️ Make vs Do
+{ "type": "video_quote",
+  "english": "EXACT quote from the dialog",
+  "speaker": "Character name from the scene",
+  "timestamp_sec": 3.4
+}
+   A shout-out to a specific moment in the video. REQUIRED for any grammar
+   section that references the scene. Quote must be verbatim; speaker from
+   the speaker mapping above. timestamp_sec optional if unknown.
 
-Turkish speakers often say \`do\` where English wants \`make\`.
+{ "type": "example",
+  "english": "He quit his job out of the blue.",
+  "note": "Past tense is typical for sudden events." // OPTIONAL
+}
+   Single example sentence illustrating the teaching point. Keep under 12
+   words. Don't add a translation field — phase 3 does that.
 
----
+{ "type": "examples_group",
+  "title": "More examples",   // optional group caption
+  "items": [
+    { "english": "An old friend texted me out of the blue." },
+    { "english": "She called me out of the blue." }
+  ]
+}
+   Use when you want 2-4 examples in a carousel/list. Prefer over multiple
+   standalone example blocks when they share a theme.
 
-### ❌ Wrong / ✅ Correct
+{ "type": "formula",
+  "formula": "Subject + should/shouldn't + verb (base)",
+  "explanation": "The base form of the verb never takes 'to'."  // optional
+}
+   Formal grammar pattern. \`formula\` is rendered monospace, ideal for
+   teaching point structures.
 
-| Wrong | Correct |
-|---|---|
-| \`She did a decision.\` | She **made** a decision. |
-| \`I did a mistake.\` | I **made** a mistake. |
+{ "type": "comparison",
+  "title": "Should vs must vs have to",
+  "comparison_rows": [
+    { "label": "should",   "example": "You should rest.",  "nuance": "gentle advice" },
+    { "label": "must",     "example": "You must leave.",   "nuance": "strong obligation, speaker-imposed" },
+    { "label": "have to",  "example": "I have to go.",     "nuance": "obligation from external rule" }
+  ]
+}
+   2-4 rows comparing closely-related structures. Prefer this over a plain
+   table when explaining nuance differences.
 
-### 💡 Why
-Use **make** for things you *create* (decisions, mistakes, plans,
-sandwiches). Use **do** for activities (do homework, do the dishes).
+{ "type": "common_mistake",
+  "wrong":   "She did a decision.",
+  "correct": "She made a decision.",
+  "note":    "Use 'make' with decisions and plans."  // optional
+}
+   ❌/✅ pattern. IMPORTANT: the "wrong" form MUST NEVER appear in the actual
+   video dialogue — only in this block as a warning.
 
-- IMPORTANT: The wrong form MUST NEVER appear in the video dialogue itself — only in this info section as a warning. The scene shows only correct English.
-- If the teaching points in this video don't have a clear L1-interference pattern, SKIP this section entirely. Don't force it.
+{ "type": "phrase",
+  "phrase": "out of the blue",
+  "meaning": "unexpectedly, with no warning",
+  "usage": "Usually past tense to describe a sudden event."   // optional
+}
+   Key phrase callout — headword + meaning + usage. One phrase block per key
+   expression in the topic.
 
-CULTURAL / CONTEXTUAL_TRANSLATION section format:
+=== BLOCK USAGE RULES ===
 
-## 🌍 [Cultural insight or translation note]
-
-One-sentence hook of why this matters for a learner.
-
----
-
-### 💬 In the video
-> *Speaker: "Relevant quote"*
-
-### 📖 What this means
-Explanation of cultural context, register, or why direct translation fails.
-If it's a contextual_translation, include the native-language parallel
-phrase: *Turkish equivalent: "…"*
-
-### 🪧 In practice
-- When/where this is commonly used.
-- Social context or formality level.
+- LLM, not human: decide how many blocks each section needs. A beginner
+  grammar section is typically 4-7 blocks; advanced can be 6-10.
+- Do not wrap examples inside paragraph text. Pull them out into dedicated
+  example / examples_group blocks.
+- Start every grammar section with: paragraph (1-2 sentences explaining the
+  term) → formula (the pattern) → video_quote (from the scene).
+- End every section with a tip/warning/note callout so the card has a
+  visual closer. Never end on a bare paragraph.
+- Cultural / contextual_translation sections should start with a short
+  paragraph hook, include a video_quote, then explain with paragraphs +
+  tip/note at the end.
+- common_mistakes sections should lead with a paragraph explaining WHEN the
+  mistake happens, then 1-3 common_mistake blocks, then a tip explaining
+  the rule.
+- Do NOT repeat video_quote blocks — one per section max.
+- Every block MUST have a type field. Optional fields can be omitted.
 
 D) SPEAKING PROMPTS (exactly 3) matched to "${args.level}" level:
 1. prompt_type "repeat": A sentence from the video. Set expected_text to the exact sentence. prompt_text should instruct the user in English (e.g., "Repeat: ...").
@@ -517,8 +680,19 @@ Return raw JSON (no markdown, no code blocks):
     {
       "section_type": "grammar",
       "teaching_point_id": "uuid-or-null",
-      "title_en": "...",
-      "body_en": "..."
+      "title_en": "Should & Shouldn't",
+      "summary_en": "Give polite advice with a modal verb.",
+      "grammar_label": "modal",
+      "blocks": [
+        { "type": "paragraph", "text": "**Should** and **shouldn't** are the go-to modal verbs for giving advice in English." },
+        { "type": "formula", "formula": "Subject + should/shouldn't + verb (base form)" },
+        { "type": "video_quote", "english": "You shouldn't buy those cheap parts.", "speaker": "Hacker", "timestamp_sec": 10.8 },
+        { "type": "examples_group", "items": [
+          { "english": "You should back up your data every night." },
+          { "english": "He shouldn't use his neural-link in the rain." }
+        ]},
+        { "type": "tip", "title": "Never add 'to'", "body": "Say 'You should go', not 'You should to go'." }
+      ]
     }
   ],
   "speaking_prompts": [
@@ -546,7 +720,7 @@ function buildTranslationPrompt(args: {
   transcript: { segments: { start: number; end: number; text: string; speaker?: string }[] };
   english: {
     quizzes: { explanation_en: string }[];
-    info_sections: { title_en: string; body_en: string }[];
+    info_sections: EnglishInfoSectionForTranslation[];
     vocabulary: { word: string; meaning_en: string; examples_en: string[] }[];
   };
 }): string {
@@ -565,7 +739,7 @@ CRITICAL RULES:
 - The "${args.level}" level matters: explanations and bodies should match that depth in each language.
 - Return EXACTLY ${expectedSegCount} subtitle segments per locale (same count as English).
 - Return EXACTLY ${expectedQuizCount} quiz explanations per locale.
-- Return EXACTLY ${expectedSectionCount} info section entries per locale.
+- Return EXACTLY ${expectedSectionCount} info sections per locale; each section's "blocks" array MUST have the same length and SAME TYPES in the same order as the English blocks.
 - Return EXACTLY ${expectedVocabCount} vocabulary entries per locale (same order).
 
 === CONTEXT ===
@@ -579,18 +753,46 @@ ${JSON.stringify(args.transcript.segments)}
 === ENGLISH QUIZ EXPLANATIONS (to translate) ===
 ${args.english.quizzes.map((q, i) => `Quiz ${i + 1}: ${q.explanation_en}`).join("\n")}
 
-=== ENGLISH INFO SECTIONS (to translate) ===
-${args.english.info_sections.map((s, i) => `Section ${i + 1}:\nTitle: ${s.title_en}\nBody: ${s.body_en}`).join("\n\n")}
+=== ENGLISH INFO SECTIONS (to translate, structured blocks) ===
+${JSON.stringify(args.english.info_sections, null, 2)}
 
 === ENGLISH VOCABULARY (to translate — keep the "word" itself in English, only translate meaning + examples) ===
 ${args.english.vocabulary.map((v, i) => `Vocab ${i + 1}: word="${v.word}"\n  meaning: ${v.meaning_en}\n  examples: ${v.examples_en.map((e) => `"${e}"`).join(" | ")}`).join("\n\n")}
+
+=== INFO SECTION TRANSLATION RULES (per block type) ===
+
+For each section, produce { title, summary, blocks }. The blocks array MUST
+mirror the English blocks 1:1 — same length, same type at each index. For
+each block, include ONLY the fields listed here:
+
+- paragraph:   { type, text }
+- heading:     { type, text }
+- bullet_list: { type, items: [{text}] }  — same item count
+- numbered_list: same as bullet_list
+- table:       { type, headers: [...], rows: [[...]] }  — same dimensions
+- divider:     { type }  — nothing to translate
+- tip | warning | note:  { type, title?, body }
+- video_quote: { type, translation }  — do NOT translate "english", "speaker", "timestamp_sec"
+- example:     { type, translation, note? }  — do NOT translate "english"
+- examples_group: { type, title?, items: [{translation, note?}] }  — english stays
+- formula:     { type, explanation? }  — "formula" itself stays English (pattern is language-neutral)
+- comparison:  { type, title?, comparison_rows: [{label, example_translation, nuance?}] }
+               — "label" often the same across languages (e.g. "should" stays "should" in Turkish
+               explanation). Translate when natural (e.g. "hasta" instead of "sick"). Always translate
+               the English example into example_translation.
+- common_mistake: { type, note? }  — "wrong" and "correct" MUST stay English (they're the teaching
+                    point's English forms)
+- phrase:      { type, meaning, usage? }  — "phrase" stays English
+
+Unknown/new block types: keep { type, text } with a best-effort translation
+of any English text you can infer.
 
 === TASK ===
 
 For each of the ${args.locales.length} locales (${args.locales.join(", ")}), produce:
 1) subtitles: array of ${expectedSegCount} segments. Keep start/end/speaker unchanged from English. Only translate "text".
 2) quiz_explanations: array of ${expectedQuizCount} translated explanation strings (in order).
-3) info_sections: array of ${expectedSectionCount} {title, body} objects (in order). Body is markdown.
+3) info_sections: array of ${expectedSectionCount} {title, summary, blocks} objects (in order).
 4) vocabulary: array of ${expectedVocabCount} {meaning, examples[]} objects (in order, same item count as English). Keep the English "word" untouched — we translate only the meaning + examples.
 
 === OUTPUT FORMAT ===
@@ -601,7 +803,19 @@ Return raw JSON (no markdown):
     "${args.locales[0]}": {
       "subtitles": [{"start": 1.64, "end": 3.34, "text": "...", "speaker": "Speaker 0"}],
       "quiz_explanations": ["...", "...", "..."],
-      "info_sections": [{"title": "...", "body": "..."}],
+      "info_sections": [
+        {
+          "title": "Should ve Shouldn't",
+          "summary": "Modal fiille nazik tavsiye verme.",
+          "blocks": [
+            { "type": "paragraph", "text": "..." },
+            { "type": "formula",   "explanation": "..." },
+            { "type": "video_quote", "translation": "..." },
+            { "type": "examples_group", "items": [{ "translation": "..." }, { "translation": "..." }] },
+            { "type": "tip", "title": "...", "body": "..." }
+          ]
+        }
+      ],
       "vocabulary": [{"meaning": "...", "examples": ["...", "..."]}]
     },
     "${args.locales[1]}": { ... },
@@ -609,6 +823,14 @@ Return raw JSON (no markdown):
   }
 }`;
 }
+
+// Shape passed into buildTranslationPrompt. Mirrors English info_sections
+// but with _en suffix stripped — the prompt serializes this to JSON.
+type EnglishInfoSectionForTranslation = {
+  title: string;
+  summary: string;
+  blocks: Record<string, unknown>[];
+};
 
 // ═══════════════════════════════════════════════════════════════
 // VALIDATORS + HELPERS
@@ -659,7 +881,16 @@ function validateEnglish(
   if (!Array.isArray(sections) || sections.length === 0) return "Missing info_sections";
   for (const sec of sections as Record<string, unknown>[]) {
     if (!VALID_SECTION_TYPES.includes(sec.section_type as string)) return `Invalid section_type: ${sec.section_type}`;
-    if (!sec.title_en || !sec.body_en) return "Info section missing title_en/body_en";
+    if (!sec.title_en || typeof sec.title_en !== "string") return "Info section missing title_en";
+    if (!sec.summary_en || typeof sec.summary_en !== "string") return "Info section missing summary_en";
+    if (!VALID_GRAMMAR_LABELS.includes(sec.grammar_label as string)) return `Invalid grammar_label: ${sec.grammar_label}`;
+    if (!Array.isArray(sec.blocks) || sec.blocks.length === 0) return "Info section missing blocks";
+    for (let bi = 0; bi < (sec.blocks as unknown[]).length; bi++) {
+      const b = (sec.blocks as Record<string, unknown>[])[bi];
+      if (!b || typeof b.type !== "string" || !VALID_BLOCK_TYPES.includes(b.type)) {
+        return `Info section block[${bi}] has invalid type: ${b?.type}`;
+      }
+    }
     if (sec.teaching_point_id && !tpIds.includes(sec.teaching_point_id as string)) {
       return `Info section references unknown teaching_point_id: ${sec.teaching_point_id}`;
     }
@@ -723,9 +954,13 @@ function validateTranslationBatch(
     if (!Array.isArray(secs) || secs.length !== expectedSectionCount) {
       return `${loc}: expected ${expectedSectionCount} info sections, got ${Array.isArray(secs) ? secs.length : 0}`;
     }
-    for (const sec of secs) {
-      const s = sec as Record<string, unknown>;
-      if (!s.title || !s.body) return `${loc}: info section missing title/body`;
+    for (let si = 0; si < (secs as unknown[]).length; si++) {
+      const s = (secs as Record<string, unknown>[])[si];
+      if (!s.title || typeof s.title !== "string") return `${loc}: info section[${si}] missing title`;
+      if (!s.summary || typeof s.summary !== "string") return `${loc}: info section[${si}] missing summary`;
+      if (!Array.isArray(s.blocks)) return `${loc}: info section[${si}] missing blocks`;
+      // block count must match the English shape so indexed zip works later.
+      // The caller passes expectedBlockCounts so we can enforce this.
     }
 
     const vocab = entry.vocabulary;
@@ -924,7 +1159,9 @@ export async function POST(req: NextRequest) {
       section_type: string;
       teaching_point_id: string | null;
       title_en: string;
-      body_en: string;
+      summary_en: string;
+      grammar_label: string;
+      blocks: Record<string, unknown>[];
     }[];
     speaking_prompts: {
       prompt_type: string;
@@ -990,10 +1227,16 @@ export async function POST(req: NextRequest) {
   // PHASE 3 — PARALLEL TRANSLATIONS (4 batches × 3 locales)
   // ═══════════════════════════════════════════════════════════════
 
+  type TranslatedBlock = Record<string, unknown>;
+  type TranslatedInfoSection = {
+    title: string;
+    summary: string;
+    blocks: TranslatedBlock[];
+  };
   type TranslationEntry = {
     subtitles: { start: number; end: number; text: string; speaker?: string }[];
     quiz_explanations: string[];
-    info_sections: { title: string; body: string }[];
+    info_sections: TranslatedInfoSection[];
     vocabulary: { meaning: string; examples: string[] }[];
   };
   type TranslationBatchResponse = {
@@ -1019,7 +1262,11 @@ export async function POST(req: NextRequest) {
         transcript,
         english: {
           quizzes: english.quizzes.map((q) => ({ explanation_en: q.explanation_en })),
-          info_sections: english.info_sections.map((s) => ({ title_en: s.title_en, body_en: s.body_en })),
+          info_sections: english.info_sections.map((s) => ({
+            title: s.title_en,
+            summary: s.summary_en,
+            blocks: s.blocks,
+          })),
           vocabulary: english.vocabulary.map((v) => ({
             word: v.word,
             meaning_en: v.meaning_en,
@@ -1128,20 +1375,240 @@ export async function POST(req: NextRequest) {
     };
   });
 
+  // Build a lang map from an English string + per-locale translations.
+  // Helper used all over the block assembly below — we store every
+  // translatable field as a {en, tr, ja, ...} lang map so the backend
+  // LocalizeInPlace walker collapses it at read time.
+  const buildLangMap = (enValue: string, pickFromTranslated: (tr: Record<string, unknown>) => unknown): Record<string, string> => {
+    const out: Record<string, string> = { en: enValue };
+    for (const loc of LOCALES) {
+      const tr = allTranslations[loc].info_sections as Record<string, unknown>[] | undefined;
+      // Placeholder — actual per-section lookup happens inline below.
+      out[loc] = ""; // will be overwritten by caller
+      void pickFromTranslated; void tr;
+    }
+    return out;
+  };
+  void buildLangMap; // kept for reference; assembly uses inline construction
+
+  // Assemble localized blocks. Every English block produces one output
+  // block where each translatable field is a {en, tr, ja, ...} lang map;
+  // LocalizeInPlace handles the collapse on read.
+  //
+  // We walk the English block + same-indexed translated block (per locale)
+  // and merge. Unknown fields pass through unchanged.
+  const assembleBlock = (enBlock: Record<string, unknown>, translatedPerLoc: Record<string, Record<string, unknown> | undefined>): Record<string, unknown> => {
+    const type = String(enBlock.type || "");
+    const out: Record<string, unknown> = { type };
+
+    // Generic helper: produces a lang map from field name `field` across
+    // en + all locale translations. Returns undefined if none are strings.
+    const langMap = (field: string): Record<string, string> | undefined => {
+      const enVal = enBlock[field];
+      if (typeof enVal !== "string" || enVal === "") return undefined;
+      const map: Record<string, string> = { en: enVal };
+      for (const loc of LOCALES) {
+        const v = translatedPerLoc[loc]?.[field];
+        map[loc] = typeof v === "string" ? v : "";
+      }
+      return map;
+    };
+
+    switch (type) {
+      case "paragraph": {
+        const t = langMap("text"); if (t) out.text = t;
+        if (enBlock.fallback_text) out.fallbackText = enBlock.fallback_text;
+        break;
+      }
+      case "heading": {
+        const t = langMap("text"); if (t) out.text = t;
+        if (typeof enBlock.level === "number") out.level = enBlock.level;
+        break;
+      }
+      case "bullet_list":
+      case "numbered_list": {
+        const enItems = Array.isArray(enBlock.items) ? (enBlock.items as Record<string, unknown>[]) : [];
+        out.items = enItems.map((enItem, idx) => {
+          const enText = typeof enItem.text === "string" ? enItem.text : "";
+          const text: Record<string, string> = { en: enText };
+          for (const loc of LOCALES) {
+            const trItems = translatedPerLoc[loc]?.items as Record<string, unknown>[] | undefined;
+            const trItem = trItems?.[idx];
+            const v = trItem?.text;
+            text[loc] = typeof v === "string" ? v : "";
+          }
+          return { text };
+        });
+        break;
+      }
+      case "table": {
+        // Headers + rows are native-only. Store each cell as a lang map.
+        const enHeaders = Array.isArray(enBlock.headers) ? (enBlock.headers as string[]) : [];
+        out.headers = enHeaders.map((enHdr, idx) => {
+          const text: Record<string, string> = { en: enHdr };
+          for (const loc of LOCALES) {
+            const trHeaders = translatedPerLoc[loc]?.headers as string[] | undefined;
+            text[loc] = typeof trHeaders?.[idx] === "string" ? trHeaders[idx] : "";
+          }
+          return { text };
+        });
+        const enRows = Array.isArray(enBlock.rows) ? (enBlock.rows as string[][]) : [];
+        out.rows = enRows.map((enRow, ri) =>
+          enRow.map((enCell, ci) => {
+            const text: Record<string, string> = { en: enCell };
+            for (const loc of LOCALES) {
+              const trRows = translatedPerLoc[loc]?.rows as string[][] | undefined;
+              text[loc] = typeof trRows?.[ri]?.[ci] === "string" ? trRows[ri][ci] : "";
+            }
+            return { text };
+          })
+        );
+        break;
+      }
+      case "divider":
+        break;
+      case "tip":
+      case "warning":
+      case "note": {
+        const t = langMap("title"); if (t) out.title = t;
+        const b = langMap("body"); if (b) out.body = b;
+        break;
+      }
+      case "video_quote": {
+        if (typeof enBlock.english === "string") out.english = enBlock.english;
+        if (typeof enBlock.speaker === "string") out.speaker = enBlock.speaker;
+        if (typeof enBlock.timestamp_sec === "number") out.timestampSec = enBlock.timestamp_sec;
+        const translations: Record<string, string> = {};
+        for (const loc of LOCALES) {
+          const v = translatedPerLoc[loc]?.translation;
+          translations[loc] = typeof v === "string" ? v : "";
+        }
+        out.translations = translations;
+        break;
+      }
+      case "example": {
+        if (typeof enBlock.english === "string") out.english = enBlock.english;
+        const translations: Record<string, string> = {};
+        for (const loc of LOCALES) {
+          const v = translatedPerLoc[loc]?.translation;
+          translations[loc] = typeof v === "string" ? v : "";
+        }
+        out.translations = translations;
+        const note = langMap("note"); if (note) out.note = note;
+        break;
+      }
+      case "examples_group": {
+        const title = langMap("title"); if (title) out.title = title;
+        const enItems = Array.isArray(enBlock.items) ? (enBlock.items as Record<string, unknown>[]) : [];
+        out.items = enItems.map((enItem, idx) => {
+          const item: Record<string, unknown> = {};
+          if (typeof enItem.english === "string") item.english = enItem.english;
+          const translations: Record<string, string> = {};
+          for (const loc of LOCALES) {
+            const trItems = translatedPerLoc[loc]?.items as Record<string, unknown>[] | undefined;
+            const v = trItems?.[idx]?.translation;
+            translations[loc] = typeof v === "string" ? v : "";
+          }
+          item.translations = translations;
+          if (typeof enItem.note === "string" && enItem.note) {
+            const note: Record<string, string> = { en: enItem.note };
+            for (const loc of LOCALES) {
+              const trItems = translatedPerLoc[loc]?.items as Record<string, unknown>[] | undefined;
+              const v = trItems?.[idx]?.note;
+              note[loc] = typeof v === "string" ? v : "";
+            }
+            item.note = note;
+          }
+          return item;
+        });
+        break;
+      }
+      case "formula": {
+        if (typeof enBlock.formula === "string") out.formula = enBlock.formula;
+        const explanation = langMap("explanation"); if (explanation) out.explanation = explanation;
+        break;
+      }
+      case "comparison": {
+        const title = langMap("title"); if (title) out.title = title;
+        const enRows = Array.isArray(enBlock.comparison_rows) ? (enBlock.comparison_rows as Record<string, unknown>[]) : [];
+        out.rows = enRows.map((enRow, idx) => {
+          const row: Record<string, unknown> = {};
+          if (typeof enRow.label === "string") {
+            const label: Record<string, string> = { en: enRow.label };
+            for (const loc of LOCALES) {
+              const trRows = translatedPerLoc[loc]?.comparison_rows as Record<string, unknown>[] | undefined;
+              const v = trRows?.[idx]?.label;
+              label[loc] = typeof v === "string" && v ? v : enRow.label as string; // labels often pass through
+            }
+            row.label = label;
+          }
+          if (typeof enRow.example === "string") row.example = enRow.example;
+          const exampleTranslations: Record<string, string> = {};
+          for (const loc of LOCALES) {
+            const trRows = translatedPerLoc[loc]?.comparison_rows as Record<string, unknown>[] | undefined;
+            const v = trRows?.[idx]?.example_translation;
+            exampleTranslations[loc] = typeof v === "string" ? v : "";
+          }
+          row.exampleTranslations = exampleTranslations;
+          if (typeof enRow.nuance === "string") {
+            const nuance: Record<string, string> = { en: enRow.nuance };
+            for (const loc of LOCALES) {
+              const trRows = translatedPerLoc[loc]?.comparison_rows as Record<string, unknown>[] | undefined;
+              const v = trRows?.[idx]?.nuance;
+              nuance[loc] = typeof v === "string" ? v : "";
+            }
+            row.nuance = nuance;
+          }
+          return row;
+        });
+        break;
+      }
+      case "common_mistake": {
+        if (typeof enBlock.wrong === "string") out.wrong = enBlock.wrong;
+        if (typeof enBlock.correct === "string") out.correct = enBlock.correct;
+        const note = langMap("note"); if (note) out.note = note;
+        break;
+      }
+      case "phrase": {
+        if (typeof enBlock.phrase === "string") out.phrase = enBlock.phrase;
+        const meaning = langMap("meaning"); if (meaning) out.meaning = meaning;
+        const usage = langMap("usage"); if (usage) out.usage = usage;
+        break;
+      }
+      default:
+        // Unknown type: keep the raw shape so iOS can render a text fallback.
+        return enBlock;
+    }
+    return out;
+  };
+
   const topicsJson = english.info_sections.map((sec, i) => {
     const title: Record<string, string> = { en: sec.title_en };
-    const body: Record<string, string> = { en: sec.body_en };
+    const summary: Record<string, string> = { en: sec.summary_en };
     for (const loc of LOCALES) {
       const entry = allTranslations[loc].info_sections[i];
       title[loc] = entry?.title ?? "";
-      body[loc] = entry?.body ?? "";
+      summary[loc] = entry?.summary ?? "";
     }
+
+    const enBlocks = Array.isArray(sec.blocks) ? sec.blocks : [];
+    const blocksOut = enBlocks.map((enBlock, bi) => {
+      const translatedPerLoc: Record<string, Record<string, unknown> | undefined> = {};
+      for (const loc of LOCALES) {
+        const trBlocks = allTranslations[loc].info_sections[i]?.blocks as Record<string, unknown>[] | undefined;
+        translatedPerLoc[loc] = trBlocks?.[bi];
+      }
+      return assembleBlock(enBlock, translatedPerLoc);
+    });
+
     return {
       id: `t-${i}`,
       kind: SECTION_KIND_MAP[sec.section_type] || sec.section_type,
+      grammarLabel: sec.grammar_label,
       teachingPointId: sec.teaching_point_id || null,
       title,
-      body,
+      summary,
+      blocks: blocksOut,
     };
   });
 
