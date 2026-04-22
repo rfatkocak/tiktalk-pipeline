@@ -226,13 +226,26 @@ const ENGLISH_SCHEMA = {
   required: ["title", "slug", "description", "keywords", "quizzes", "info_sections", "speaking_prompts", "vocabulary"],
 };
 
-// Built dynamically per batch — locale keys are required so Gemini cannot drift
-function buildTranslationSchema(locales: string[]) {
+// Built dynamically per batch — locale keys + array lengths locked so
+// Gemini cannot drift on item count (we've seen ES returning 4 quiz
+// explanations for a 3-quiz lesson; minItems/maxItems stops that at the
+// schema layer, before we fall back to post-hoc validation).
+function buildTranslationSchema(
+  locales: string[],
+  counts: {
+    subtitles: number;
+    quizExplanations: number;
+    infoSections: number;
+    vocabulary: number;
+  },
+) {
   const localeEntrySchema = {
     type: "object",
     properties: {
       subtitles: {
         type: "array",
+        minItems: counts.subtitles,
+        maxItems: counts.subtitles,
         items: {
           type: "object",
           properties: {
@@ -246,10 +259,14 @@ function buildTranslationSchema(locales: string[]) {
       },
       quiz_explanations: {
         type: "array",
+        minItems: counts.quizExplanations,
+        maxItems: counts.quizExplanations,
         items: { type: "string" },
       },
       info_sections: {
         type: "array",
+        minItems: counts.infoSections,
+        maxItems: counts.infoSections,
         items: {
           type: "object",
           properties: {
@@ -311,6 +328,8 @@ function buildTranslationSchema(locales: string[]) {
       },
       vocabulary: {
         type: "array",
+        minItems: counts.vocabulary,
+        maxItems: counts.vocabulary,
         items: {
           type: "object",
           properties: {
@@ -1281,8 +1300,35 @@ export async function POST(req: NextRequest) {
       }),
       temperature: 0.3,
       maxOutputTokens: 65536,
-      schema: buildTranslationSchema(batchLocales),
+      schema: buildTranslationSchema(batchLocales, {
+        subtitles: expectedSegCount,
+        quizExplanations: expectedQuizCount,
+        infoSections: expectedSectionCount,
+        vocabulary: expectedVocabCount,
+      }),
     });
+
+    // Gemini still occasionally ignores minItems/maxItems on nested arrays
+    // and returns one extra entry. Trim any over-count before validation so
+    // a single-locale drift doesn't torpedo the whole batch.
+    if (batchResult?.translations) {
+      for (const loc of batchLocales) {
+        const entry = batchResult.translations[loc];
+        if (!entry) continue;
+        if (Array.isArray(entry.subtitles) && entry.subtitles.length > expectedSegCount) {
+          entry.subtitles.length = expectedSegCount;
+        }
+        if (Array.isArray(entry.quiz_explanations) && entry.quiz_explanations.length > expectedQuizCount) {
+          entry.quiz_explanations.length = expectedQuizCount;
+        }
+        if (Array.isArray(entry.info_sections) && entry.info_sections.length > expectedSectionCount) {
+          entry.info_sections.length = expectedSectionCount;
+        }
+        if (Array.isArray(entry.vocabulary) && entry.vocabulary.length > expectedVocabCount) {
+          entry.vocabulary.length = expectedVocabCount;
+        }
+      }
+    }
 
     const validationErr = validateTranslationBatch(
       batchResult as unknown as Record<string, unknown>,
