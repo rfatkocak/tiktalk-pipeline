@@ -158,7 +158,11 @@ Return ONLY raw JSON matching the schema. No markdown, no code blocks, no commen
       temperature: 1.2,
       maxOutputTokens: 65536,
       schema: RESPONSE_SCHEMA,
-      thinkingLevel: "HIGH",
+      // gemini-2.5-flash doesn't honor thinkingLevel (that's a 3.x-flash
+      // thing). Use -1 = dynamic (model decides how much to think). This
+      // prompt does benefit from some reasoning — picking coherent TPs +
+      // a scene — so we don't want 0.
+      thinkingBudget: -1,
     });
 
     // Validate TP ids are in the allowed list
