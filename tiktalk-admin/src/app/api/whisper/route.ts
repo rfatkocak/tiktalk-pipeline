@@ -44,27 +44,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `File not found: ${item.video_file}` }, { status: 404 });
   }
 
-  // Build the Whisper priming prompt from whatever we have on hand.
-  const primingPrompt = buildWhisperPrompt({
-    seedancePrompt: item.seedance_prompt || "",
-    tpNames: (item.tp_names as string[] | null) || [],
-    level: item.level || "intermediate",
-  });
-
+  // NOTE on priming prompt: OpenAI's gpt-4o-transcribe-diarize rejects the
+  // `prompt` field ("Prompt is not supported for diarization models").
+  // Only the legacy whisper-1 supports it, and that one can't diarize.
+  // We keep buildWhisperPrompt around (unused) in case OpenAI adds prompt
+  // support to a future diarize model — easy to re-enable. For now, the
+  // segment-merge post-process below handles the same-speaker continuation
+  // case on its own.
   const fileBuffer = fs.readFileSync(filePath);
   const formData = new FormData();
   formData.append("file", new Blob([fileBuffer], { type: "video/mp4" }), item.video_file);
   formData.append("model", "gpt-4o-transcribe-diarize");
   formData.append("response_format", "diarized_json");
   formData.append("language", "en");
-  if (primingPrompt) {
-    formData.append("prompt", primingPrompt);
-  }
 
   await logPipeline(poolItemId, "whisper", "info", "Whisper transcription started", {
     file: item.video_file,
-    primed: Boolean(primingPrompt),
-    prompt_chars: primingPrompt.length,
   });
   const start = Date.now();
 
