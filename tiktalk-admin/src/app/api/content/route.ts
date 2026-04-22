@@ -100,16 +100,18 @@ const ENGLISH_SCHEMA = {
     title: { type: "string" },
     slug: { type: "string" },
     description: { type: "string" },
-    keywords: { type: "array", items: { type: "string" } },
+    keywords: { type: "array", minItems: 3, maxItems: 10, items: { type: "string" } },
     quizzes: {
       type: "array",
+      minItems: 3,
+      maxItems: 3,
       items: {
         type: "object",
         properties: {
           kind: { type: "string" },     // multipleChoice | fillInBlank | listenAndPick
           purpose: { type: "string" },  // comprehension | grammar | vocabulary
           question: { type: "string" },
-          options: { type: "array", items: { type: "string" } },
+          options: { type: "array", minItems: 4, maxItems: 4, items: { type: "string" } },
           correct_index: { type: "integer" },
           explanation_en: { type: "string" },
         },
@@ -118,6 +120,8 @@ const ENGLISH_SCHEMA = {
     },
     info_sections: {
       type: "array",
+      minItems: 1,
+      maxItems: 6,   // cap — prevents Gemini runaway generation + MAX_TOKENS
       items: {
         type: "object",
         properties: {
@@ -128,6 +132,8 @@ const ENGLISH_SCHEMA = {
           grammar_label: { type: "string" },      // UI badge: idiom | phrase | tense | modal | verb-pattern | preposition | conditional | question | pronoun | adjective | other
           blocks: {
             type: "array",
+            minItems: 3,
+            maxItems: 10,   // cap — 10 blocks per section is plenty, stops runaway
             items: {
               // Discriminated union — `type` picks the shape. All fields
               // listed as optional; validator checks per-type requirements.
@@ -139,6 +145,8 @@ const ENGLISH_SCHEMA = {
                 level:         { type: "integer" }, // heading
                 items: {                            // bullet_list, numbered_list, examples_group
                   type: "array",
+                  minItems: 2,
+                  maxItems: 6,
                   items: {
                     type: "object",
                     properties: {
@@ -149,17 +157,21 @@ const ENGLISH_SCHEMA = {
                     },
                   },
                 },
-                headers: { type: "array", items: { type: "string" } }, // table
+                headers: { type: "array", maxItems: 4, items: { type: "string" } }, // table
                 rows: {                                                  // table, comparison
                   type: "array",
+                  maxItems: 6,
                   items: {
                     // Either string[] (table) or object {label, example, exampleTranslation, nuance} (comparison)
                     type: "array",
+                    maxItems: 4,
                     items: { type: "string" },
                   },
                 },
                 comparison_rows: {                                       // comparison (typed rows)
                   type: "array",
+                  minItems: 2,
+                  maxItems: 4,
                   items: {
                     type: "object",
                     properties: {
@@ -194,6 +206,8 @@ const ENGLISH_SCHEMA = {
     },
     speaking_prompts: {
       type: "array",
+      minItems: 3,
+      maxItems: 3,
       items: {
         type: "object",
         properties: {
@@ -207,6 +221,8 @@ const ENGLISH_SCHEMA = {
     },
     vocabulary: {
       type: "array",
+      minItems: 3,
+      maxItems: 6,
       items: {
         type: "object",
         properties: {
@@ -216,6 +232,8 @@ const ENGLISH_SCHEMA = {
           meaning_en: { type: "string" },
           examples_en: {
             type: "array",
+            minItems: 1,
+            maxItems: 3,
             items: { type: "string" },
           },
         },
