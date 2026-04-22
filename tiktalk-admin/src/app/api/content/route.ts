@@ -94,7 +94,14 @@ const MATCH_SCHEMA = {
   required: ["match", "match_score", "match_reason"],
 };
 
-const ENGLISH_SCHEMA = {
+// Phase 2 runs as two parallel Gemini calls — the single-call version of
+// this prompt kept hitting MAX_TOKENS on 2.5-flash because info_sections
+// alone (blocks array) produces enough tokens to fill the 65K budget.
+// Splitting gives each call its own 65K budget, cuts total latency, and
+// the two pieces don't reference each other so parallelism is safe.
+
+// Call A: metadata + quizzes + speaking prompts + vocabulary.
+const ENGLISH_META_SCHEMA = {
   type: "object",
   properties: {
     title: { type: "string" },
@@ -108,100 +115,14 @@ const ENGLISH_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          kind: { type: "string" },     // multipleChoice | fillInBlank | listenAndPick
-          purpose: { type: "string" },  // comprehension | grammar | vocabulary
+          kind: { type: "string" },
+          purpose: { type: "string" },
           question: { type: "string" },
-          options: { type: "array", minItems: 4, maxItems: 4, items: { type: "string" } },
+          options: { type: "array", items: { type: "string" } },
           correct_index: { type: "integer" },
           explanation_en: { type: "string" },
         },
         required: ["kind", "purpose", "question", "options", "correct_index", "explanation_en"],
-      },
-    },
-    info_sections: {
-      type: "array",
-      minItems: 1,
-      maxItems: 6,   // cap — prevents Gemini runaway generation + MAX_TOKENS
-      items: {
-        type: "object",
-        properties: {
-          section_type: { type: "string" },       // grammar | cultural | contextual_translation | extra_notes | common_mistakes
-          teaching_point_id: { type: "string", nullable: true },
-          title_en: { type: "string" },
-          summary_en: { type: "string" },         // one-liner shown under title
-          grammar_label: { type: "string" },      // UI badge: idiom | phrase | tense | modal | verb-pattern | preposition | conditional | question | pronoun | adjective | other
-          blocks: {
-            type: "array",
-            minItems: 3,
-            maxItems: 10,   // cap — 10 blocks per section is plenty, stops runaway
-            items: {
-              // Discriminated union — `type` picks the shape. All fields
-              // listed as optional; validator checks per-type requirements.
-              type: "object",
-              properties: {
-                type:          { type: "string" },
-                text:          { type: "string" },
-                fallback_text: { type: "string" }, // forward-compat plain-text summary for unknown block types
-                level:         { type: "integer" }, // heading
-                items: {                            // bullet_list, numbered_list, examples_group
-                  type: "array",
-                  minItems: 2,
-                  maxItems: 6,
-                  items: {
-                    type: "object",
-                    properties: {
-                      text:        { type: "string" },
-                      english:     { type: "string" },
-                      translation: { type: "string" },
-                      note:        { type: "string" },
-                    },
-                  },
-                },
-                headers: { type: "array", maxItems: 4, items: { type: "string" } }, // table
-                rows: {                                                  // table, comparison
-                  type: "array",
-                  maxItems: 6,
-                  items: {
-                    // Either string[] (table) or object {label, example, exampleTranslation, nuance} (comparison)
-                    type: "array",
-                    maxItems: 4,
-                    items: { type: "string" },
-                  },
-                },
-                comparison_rows: {                                       // comparison (typed rows)
-                  type: "array",
-                  minItems: 2,
-                  maxItems: 4,
-                  items: {
-                    type: "object",
-                    properties: {
-                      label:                { type: "string" },
-                      example:              { type: "string" },
-                      example_translation:  { type: "string" },
-                      nuance:               { type: "string" },
-                    },
-                  },
-                },
-                title:   { type: "string" },   // tip | warning | note | examples_group | comparison | table caption
-                body:    { type: "string" },   // tip | warning | note
-                english: { type: "string" },   // example | video_quote
-                translation: { type: "string" },
-                speaker:       { type: "string" }, // video_quote
-                timestamp_sec: { type: "number" }, // video_quote
-                note:          { type: "string" }, // example | common_mistake
-                formula:       { type: "string" }, // formula
-                explanation:   { type: "string" }, // formula
-                wrong:         { type: "string" }, // common_mistake
-                correct:       { type: "string" }, // common_mistake
-                phrase:        { type: "string" }, // phrase
-                meaning:       { type: "string" }, // phrase
-                usage:         { type: "string" }, // phrase
-              },
-              required: ["type"],
-            },
-          },
-        },
-        required: ["section_type", "title_en", "summary_en", "grammar_label", "blocks"],
       },
     },
     speaking_prompts: {
@@ -227,13 +148,11 @@ const ENGLISH_SCHEMA = {
         type: "object",
         properties: {
           word: { type: "string" },
-          kind: { type: "string" },           // basics | phrase | idiom
-          phonetic: { type: "string" },       // IPA
+          kind: { type: "string" },
+          phonetic: { type: "string" },
           meaning_en: { type: "string" },
           examples_en: {
             type: "array",
-            minItems: 1,
-            maxItems: 3,
             items: { type: "string" },
           },
         },
@@ -241,7 +160,45 @@ const ENGLISH_SCHEMA = {
       },
     },
   },
-  required: ["title", "slug", "description", "keywords", "quizzes", "info_sections", "speaking_prompts", "vocabulary"],
+  required: ["title", "slug", "description", "keywords", "quizzes", "speaking_prompts", "vocabulary"],
+};
+
+// Call B: info_sections only (the big, block-heavy output).
+const ENGLISH_SECTIONS_SCHEMA = {
+  type: "object",
+  properties: {
+    info_sections: {
+      type: "array",
+      minItems: 1,
+      maxItems: 6,
+      items: {
+        type: "object",
+        properties: {
+          section_type: { type: "string" },
+          teaching_point_id: { type: "string", nullable: true },
+          title_en: { type: "string" },
+          summary_en: { type: "string" },
+          grammar_label: { type: "string" },
+          blocks: {
+            // Discriminated-union shape too complex for Gemini's JSON schema
+            // validator when fully described. Only require the `type`
+            // discriminator; prompt explains the valid per-type fields and
+            // validateEnglish enforces presence in code.
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string" },
+              },
+              required: ["type"],
+            },
+          },
+        },
+        required: ["section_type", "title_en", "summary_en", "grammar_label", "blocks"],
+      },
+    },
+  },
+  required: ["info_sections"],
 };
 
 // Built dynamically per batch — locale keys + array lengths locked so
@@ -290,52 +247,15 @@ function buildTranslationSchema(
           properties: {
             title:   { type: "string" },
             summary: { type: "string" },
-            // Per-block translations. Order + length MUST match the English
-            // blocks array. All fields optional — only fill the ones the
-            // English block uses. divider has no fields.
+            // Same reason as English block schema — keep minimal. Prompt
+            // instructs the per-type translatable fields; validator
+            // checks counts + presence.
             blocks: {
               type: "array",
               items: {
                 type: "object",
                 properties: {
-                  type:          { type: "string" },
-                  text:          { type: "string" },
-                  fallback_text: { type: "string" },
-                  level:         { type: "integer" },
-                  items: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        text:        { type: "string" },
-                        translation: { type: "string" },
-                        note:        { type: "string" },
-                      },
-                    },
-                  },
-                  headers: { type: "array", items: { type: "string" } },
-                  rows: {
-                    type: "array",
-                    items: { type: "array", items: { type: "string" } },
-                  },
-                  comparison_rows: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        label:                { type: "string" },
-                        example_translation:  { type: "string" },
-                        nuance:               { type: "string" },
-                      },
-                    },
-                  },
-                  title:        { type: "string" },
-                  body:         { type: "string" },
-                  translation:  { type: "string" },
-                  note:         { type: "string" },
-                  explanation:  { type: "string" },
-                  meaning:      { type: "string" },
-                  usage:        { type: "string" },
+                  type: { type: "string" },
                 },
                 required: ["type"],
               },
@@ -446,7 +366,8 @@ Return raw JSON (no markdown):
 If match is false, speaker_mapping can be empty. Be strict — only set match=true if the TPs are actually present in the dialogue.`;
 }
 
-function buildEnglishPrompt(args: {
+// Shared intro + CONTEXT block for both Phase 2 prompts.
+function phase2Context(args: {
   channelName: string;
   channelDescription: string;
   level: string;
@@ -456,12 +377,7 @@ function buildEnglishPrompt(args: {
   transcript: { segments: unknown[]; full_text: string; duration: number };
   speakerMapping: { id: string; role: string }[];
 }): string {
-  const tpCount = args.tps.length;
-  const expectedSectionCount = tpCount + 1;
-
-  return `You are a content generator for TikTalk, a social-media style language learning app. This is PHASE 2 of 3 — you generate ALL English-language content for a single video. Translations are handled separately in phase 3, so DO NOT translate anything here. English only.
-
-=== CONTEXT ===
+  return `=== CONTEXT ===
 
 CHANNEL: "${args.channelName}"
 CHANNEL DESCRIPTION: ${args.channelDescription || "(no description)"}
@@ -478,7 +394,25 @@ WHISPER TRANSCRIPT:
 ${args.transcript.full_text}
 
 SPEAKER ROLES (identified in phase 1):
-${args.speakerMapping.map((s) => `${s.id} → ${s.role}`).join("\n") || "(unknown)"}
+${args.speakerMapping.map((s) => `${s.id} → ${s.role}`).join("\n") || "(unknown)"}`;
+}
+
+// Phase 2a — metadata + quizzes + speaking prompts + vocabulary. Small
+// enough output to comfortably fit under 8K tokens even with level-rich
+// explanations.
+function buildEnglishMetaPrompt(args: {
+  channelName: string;
+  channelDescription: string;
+  level: string;
+  vibes: { name: string }[];
+  seedancePrompt: string;
+  tps: { id: string; name: string; category: string; description: string }[];
+  transcript: { segments: unknown[]; full_text: string; duration: number };
+  speakerMapping: { id: string; role: string }[];
+}): string {
+  return `You are a content generator for TikTalk, a social-media style language learning app. This is PHASE 2a of 3 — generate English-language METADATA + QUIZZES + SPEAKING PROMPTS + VOCABULARY for a single video. (Info sections with content blocks are handled by a parallel call; do NOT include info_sections here.) Translations are phase 3.
+
+${phase2Context(args)}
 
 === TASK ===
 
@@ -514,7 +448,73 @@ Each quiz has TWO independent dimensions — pick variety across all 3 quizzes.
 Example of a good beginner quiz explanation:
 "We use 'Can I have...' to politely ask for something. 'Could I' and 'May I' are also polite, but 'Can I' is the most common in everyday speech."
 
-C) INFO SECTIONS (${expectedSectionCount} required + 1 optional):
+D) SPEAKING PROMPTS (exactly 3) matched to "${args.level}" level:
+1. prompt_type "repeat": A sentence from the video. Set expected_text to the exact sentence. prompt_text should instruct the user in English (e.g., "Repeat: ...").
+2. prompt_type "repeat": Another sentence from the video. Set expected_text.
+3. prompt_type "produce": A task asking the user to create their own sentence using the video's patterns.
+   - beginner: Very guided with a template
+   - intermediate: Moderately open
+   - advanced: Fully open-ended
+   Set context_hint for LLM evaluation, expected_text null.
+
+E) VOCABULARY (3-6 items — most useful words/phrases the learner should walk away knowing):
+- word: The word/phrase AS IT APPEARS in the dialog ("neural link", "gotta").
+- kind: "basics" (single word) | "phrase" (2-4 word collocation) | "idiom".
+- phonetic: IPA (e.g. "/ˈkɒf.i/"). Omit if not confident.
+- meaning_en: One-sentence plain-English definition at "${args.level}" depth.
+- examples_en: 1-2 short example sentences (under 12 words each). At least one verbatim from the dialog if possible.
+
+PICKING vocabulary:
+- Only pick items a "${args.level}" learner wouldn't already know.
+- Prefer items that appear in the DIALOG over generic curriculum words.
+- Slang/contractions (gonna, wanna, gotta) → "phrase" kind for beginners.
+- Idioms trump literal phrases when both are present.
+- Do NOT include function words (the, of, and), TP names, or things any second-year student already knows.
+
+=== OUTPUT FORMAT ===
+
+Return raw JSON (no markdown):
+{
+  "title": "...",
+  "slug": "ordering-coffee-beginner",
+  "description": "... #tag1 #tag2 #tag3",
+  "keywords": ["coffee", "order", "please"],
+  "quizzes": [
+    { "kind": "multipleChoice", "purpose": "comprehension", "question": "...", "options": ["A","B","C","D"], "correct_index": 0, "explanation_en": "..." }
+  ],
+  "speaking_prompts": [
+    {"prompt_type": "repeat", "prompt_text": "Repeat: ...", "expected_text": "...", "context_hint": null},
+    {"prompt_type": "repeat", "prompt_text": "Repeat: ...", "expected_text": "...", "context_hint": null},
+    {"prompt_type": "produce", "prompt_text": "...", "expected_text": null, "context_hint": "..."}
+  ],
+  "vocabulary": [
+    { "word": "neural link", "kind": "phrase", "phonetic": "/ˈnʊr.əl lɪŋk/", "meaning_en": "A cybernetic brain-computer connection.", "examples_en": ["You gotta fix your neural link."] }
+  ]
+}`;
+}
+
+// Phase 2b — info_sections (the block-heavy output). Calls get the full
+// block vocabulary; nothing else.
+function buildEnglishSectionsPrompt(args: {
+  channelName: string;
+  channelDescription: string;
+  level: string;
+  vibes: { name: string }[];
+  seedancePrompt: string;
+  tps: { id: string; name: string; category: string; description: string }[];
+  transcript: { segments: unknown[]; full_text: string; duration: number };
+  speakerMapping: { id: string; role: string }[];
+}): string {
+  const tpCount = args.tps.length;
+  const expectedSectionCount = tpCount + 1;
+
+  return `You are a content generator for TikTalk, a social-media style language learning app. This is PHASE 2b of 3 — generate the English INFO SECTIONS (structured content blocks) only. Other English fields (metadata, quizzes, speaking prompts, vocabulary) come from a parallel call. Do NOT translate anything here. English only. Translations are phase 3.
+
+${phase2Context(args)}
+
+=== TASK ===
+
+INFO SECTIONS (${expectedSectionCount} required + 1 optional):
 - One section per teaching point (section_type="grammar"), plus
 - One "cultural" or "contextual_translation" section, plus
 - Optionally one "common_mistakes" section when a clear L1-interference
@@ -658,61 +658,13 @@ Language-learning blocks (structured — DO NOT encode these inside paragraphs):
 - Do NOT repeat video_quote blocks — one per section max.
 - Every block MUST have a type field. Optional fields can be omitted.
 
-D) SPEAKING PROMPTS (exactly 3) matched to "${args.level}" level:
-1. prompt_type "repeat": A sentence from the video. Set expected_text to the exact sentence. prompt_text should instruct the user in English (e.g., "Repeat: ...").
-2. prompt_type "repeat": Another sentence from the video. Set expected_text.
-3. prompt_type "produce": A task asking the user to create their own sentence using the video's patterns.
-   - beginner: Very guided with a template
-   - intermediate: Moderately open
-   - advanced: Fully open-ended
-   Set context_hint for LLM evaluation, expected_text null.
-
-E) VOCABULARY (3-6 items — most useful words/phrases the learner should
-   walk away knowing after watching this scene):
-- word: The word or short phrase AS IT APPEARS in the dialog ("neural link",
-  "gotta", "grab a coffee"). Case-sensitive preservation not required —
-  lowercase unless it's a proper noun.
-- kind: One of
-   * "basics"  → single common word ("coffee", "yesterday", "hungry")
-   * "phrase"  → 2-4 word collocation ("neural link", "grab a coffee")
-   * "idiom"   → figurative expression ("break the ice", "hit the road")
-- phonetic: IPA transcription (e.g. "/ˈkɒf.i/", "/ɡɒt.ə/"). If you're not
-  confident, omit the field — empty string is fine, we'd rather show nothing
-  than mislead a beginner.
-- meaning_en: One-sentence plain-English definition at "${args.level}" level
-  depth. Beginner = 5-10 words. Advanced = can include nuance, register.
-- examples_en: 1-2 short example sentences showing the word in use. At least
-  one example MUST come from the video dialog verbatim if possible. Keep
-  each example under 12 words.
-
-PICKING vocabulary (this is the most important step — don't dump the whole
-dictionary):
-- Only pick items a learner at "${args.level}" wouldn't already know.
-- Prefer items that appear in the DIALOG over generic curriculum words.
-- If the scene uses slang/contractions (gonna, wanna, gotta) at beginner
-  level, include them as "phrase" kind — learners need to decode them.
-- Idioms trump literal phrases when both are present.
-- Do NOT include function words (the, of, and), TP names, or things any
-  second-year student already knows unless the register is unusual.
-
 === OUTPUT FORMAT ===
 
-Return raw JSON (no markdown, no code blocks):
+Return raw JSON (no markdown, no code blocks). Only info_sections — no
+metadata, no quizzes, no speaking prompts, no vocabulary (those come
+from the parallel call).
+
 {
-  "title": "...",
-  "slug": "ordering-coffee-beginner",
-  "description": "... #tag1 #tag2 #tag3",
-  "keywords": ["coffee", "order", "please"],
-  "quizzes": [
-    {
-      "kind": "multipleChoice",
-      "purpose": "comprehension",
-      "question": "...",
-      "options": ["A", "B", "C", "D"],
-      "correct_index": 0,
-      "explanation_en": "..."
-    }
-  ],
   "info_sections": [
     {
       "section_type": "grammar",
@@ -730,20 +682,6 @@ Return raw JSON (no markdown, no code blocks):
         ]},
         { "type": "tip", "title": "Never add 'to'", "body": "Say 'You should go', not 'You should to go'." }
       ]
-    }
-  ],
-  "speaking_prompts": [
-    {"prompt_type": "repeat", "prompt_text": "Repeat: ...", "expected_text": "...", "context_hint": null},
-    {"prompt_type": "repeat", "prompt_text": "Repeat: ...", "expected_text": "...", "context_hint": null},
-    {"prompt_type": "produce", "prompt_text": "...", "expected_text": null, "context_hint": "..."}
-  ],
-  "vocabulary": [
-    {
-      "word": "neural link",
-      "kind": "phrase",
-      "phonetic": "/ˈnʊr.əl lɪŋk/",
-      "meaning_en": "A cybernetic connection between a brain and a computer.",
-      "examples_en": ["You gotta fix your neural link.", "My neural link is glitching."]
     }
   ]
 }`;
@@ -1215,32 +1153,42 @@ export async function POST(req: NextRequest) {
     }[];
   };
 
+  // Phase 2 runs as two parallel Gemini calls — splitting by output type
+  // keeps each call well under MAX_TOKENS and halves wall-clock time.
+  type EnglishMetaResponse = Omit<EnglishContent, "info_sections">;
+  type EnglishSectionsResponse = Pick<EnglishContent, "info_sections">;
+
   let english: EnglishContent;
-  await logPipeline(poolItemId, "content", "info", "Phase 2 (English content) started");
+  await logPipeline(poolItemId, "content", "info", "Phase 2 (English content) started — 2 parallel calls");
   const phase2Start = Date.now();
+  const phase2Args = {
+    channelName: item.channel_name,
+    channelDescription: item.channel_description || "",
+    level: item.level,
+    vibes,
+    seedancePrompt: item.seedance_prompt,
+    tps,
+    transcript,
+    speakerMapping,
+  };
   try {
-    const { data } = await callGemini<EnglishContent>({
-      prompt: buildEnglishPrompt({
-        channelName: item.channel_name,
-        channelDescription: item.channel_description || "",
-        level: item.level,
-        vibes,
-        seedancePrompt: item.seedance_prompt,
-        tps,
-        transcript,
-        speakerMapping,
+    const [metaRes, sectionsRes] = await Promise.all([
+      callGemini<EnglishMetaResponse>({
+        prompt: buildEnglishMetaPrompt(phase2Args),
+        temperature: 0.6,
+        maxOutputTokens: 32768,
+        schema: ENGLISH_META_SCHEMA,
+        thinkingBudget: 0,
       }),
-      temperature: 0.6,
-      maxOutputTokens: 65536,
-      schema: ENGLISH_SCHEMA,
-      // Disable thinking entirely. Phase 2 is structured + mechanical —
-      // the schema + block vocab do the "planning", no CoT needed. Every
-      // thinking token is one less token for the JSON payload, and even
-      // MINIMAL was eating enough on 3-flash-preview to trigger MAX_TOKENS
-      // truncation on lessons with 4+ info sections + vocab + quizzes.
-      thinkingBudget: 0,
-    });
-    english = data;
+      callGemini<EnglishSectionsResponse>({
+        prompt: buildEnglishSectionsPrompt(phase2Args),
+        temperature: 0.6,
+        maxOutputTokens: 65536,
+        schema: ENGLISH_SECTIONS_SCHEMA,
+        thinkingBudget: 0,
+      }),
+    ]);
+    english = { ...metaRes.data, ...sectionsRes.data } as EnglishContent;
     await logPipeline(poolItemId, "content", "info", "Phase 2 finished", {
       duration_ms: Date.now() - phase2Start,
       quizzes: english.quizzes?.length,
