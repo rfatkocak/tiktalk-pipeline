@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
   // Whisper returns start/end in SECONDS. We keep it that way — iOS expects
   // seconds, mock lessons use seconds, backend passes subtitles.jsonb through
   // unchanged. Round to 2 decimals so the jsonb stays compact.
-  const segments = (whisperResult.segments || []).map(
+  const rawSegments = (whisperResult.segments || []).map(
     (seg: { start: number; end: number; text: string; speaker: string }) => ({
       start: Math.round(seg.start * 100) / 100,
       end: Math.round(seg.end * 100) / 100,
@@ -99,6 +99,40 @@ export async function POST(req: NextRequest) {
       speaker: seg.speaker || null,
     })
   );
+
+  // Merge same-speaker continuations. diarize splits on short in-turn
+  // pauses ("I love you" … "so much"); for a learner subtitle those read
+  // better as a single line. Merge when:
+  //   - next segment has the SAME speaker as the current one,
+  //   - gap between them is <= 1.5 seconds,
+  //   - combined text stays under ~90 chars / ~18 words (keeps subtitles
+  //     readable — learners can't handle a wall of text in 3 sec).
+  const MERGE_MAX_GAP_SEC = 1.5;
+  const MERGE_MAX_CHARS = 90;
+  const MERGE_MAX_WORDS = 18;
+  const segments: typeof rawSegments = [];
+  for (const seg of rawSegments) {
+    const prev = segments[segments.length - 1];
+    if (!prev) {
+      segments.push(seg);
+      continue;
+    }
+    const sameSpeaker = prev.speaker && seg.speaker && prev.speaker === seg.speaker;
+    const gap = seg.start - prev.end;
+    const combinedText = `${prev.text} ${seg.text}`.trim();
+    const combinedWords = combinedText.split(/\s+/).length;
+    if (
+      sameSpeaker &&
+      gap <= MERGE_MAX_GAP_SEC &&
+      combinedText.length <= MERGE_MAX_CHARS &&
+      combinedWords <= MERGE_MAX_WORDS
+    ) {
+      prev.end = seg.end;
+      prev.text = combinedText;
+    } else {
+      segments.push(seg);
+    }
+  }
 
   const transcript = {
     full_text: whisperResult.text,
@@ -164,6 +198,13 @@ function buildWhisperPrompt(args: {
       : args.level === "beginner"
       ? "Slow, clear conversational American English. Transcribe contractions literally when used (gonna, wanna). Use proper punctuation."
       : "Natural conversational American English. Transcribe contractions literally (gonna, wanna, gotta). Use proper punctuation."
+  );
+
+  // 4) Segmentation hint — when the same speaker pauses briefly and
+  // continues the same thought, keep it as ONE segment. Avoids subtitle
+  // fragmentation like ["I love you", "so much"] → ["I love you so much"].
+  parts.push(
+    "When a speaker pauses briefly mid-thought and then continues, transcribe the full utterance as a single segment. Only split segments when a different speaker begins.",
   );
 
   const joined = parts.join(" ");
