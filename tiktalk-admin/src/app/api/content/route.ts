@@ -1196,7 +1196,12 @@ export async function POST(req: NextRequest) {
       temperature: 0.6,
       maxOutputTokens: 65536,
       schema: ENGLISH_SCHEMA,
-      thinkingLevel: "MEDIUM",
+      // MINIMAL thinking — Phase 2 is structured and mechanical (follow
+      // the schema + block vocab). Thinking tokens share the 65K output
+      // budget with the JSON response. MEDIUM was eating enough that we
+      // hit MAX_TOKENS after ~230s; MINIMAL keeps the full budget for
+      // JSON while still letting Gemini plan the block ordering.
+      thinkingLevel: "MINIMAL",
     });
     english = data;
     await logPipeline(poolItemId, "content", "info", "Phase 2 finished", {
