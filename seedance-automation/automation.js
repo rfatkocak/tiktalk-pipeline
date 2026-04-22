@@ -77,7 +77,7 @@ async function selectVideoMode() {
 // Sayfada aktif üretim olup olmadığını kontrol et
 // "Hayal ediliyor" veya herhangi bir progress badge varsa bekle
 async function waitUntilIdle(onProgress) {
-  const maxWait = 12 * 60 * 1000; // 12 dakika
+  const maxWait = 20 * 60 * 1000; // 20 dakika
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxWait) {
@@ -93,7 +93,7 @@ async function waitUntilIdle(onProgress) {
     await page.waitForTimeout(5000);
   }
 
-  throw new Error('Sayfa 12 dakikadır meşgul, devam edilemiyor');
+  throw new Error('Sayfa 20 dakikadır meşgul, devam edilemiyor');
 }
 
 async function generateVideo(videoData, onProgress) {
@@ -160,7 +160,7 @@ async function generateVideo(videoData, onProgress) {
   }
 
   // 4) Progress takip et - badge kaybolana kadar
-  const maxWait = 10 * 60 * 1000;
+  const maxWait = 20 * 60 * 1000;
   const startTime = Date.now();
   let noCardCount = 0;
 
@@ -221,7 +221,7 @@ async function generateVideo(videoData, onProgress) {
   }
 
   if (Date.now() - startTime >= maxWait) {
-    throw new Error('Zaman aşımı - video üretimi 10 dakikayı geçti');
+    throw new Error('Zaman aşımı - video üretimi 20 dakikayı geçti');
   }
 
   // 5) Biraz bekle, sonra video src al
