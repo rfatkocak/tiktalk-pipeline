@@ -205,6 +205,84 @@ const ENGLISH_SECTIONS_SCHEMA = {
 // Gemini cannot drift on item count (we've seen ES returning 4 quiz
 // explanations for a 3-quiz lesson; minItems/maxItems stops that at the
 // schema layer, before we fall back to post-hoc validation).
+// Single-locale translation schema. Phase 3 now fires 12 parallel calls
+// (one per locale) instead of 4 batches of 3. Smaller output per call
+// → less MAX_TOKENS risk + Gemini focuses on one language at a time for
+// better natural-phrasing quality. The schema mirrors a single-locale
+// entry of the old multi-locale schema — no outer "translations" object.
+function buildLocaleTranslationSchema(counts: {
+  subtitles: number;
+  quizExplanations: number;
+  infoSections: number;
+  vocabulary: number;
+}) {
+  return {
+    type: "object",
+    properties: {
+      subtitles: {
+        type: "array",
+        minItems: counts.subtitles,
+        maxItems: counts.subtitles,
+        items: {
+          type: "object",
+          properties: {
+            start: { type: "number" },
+            end: { type: "number" },
+            text: { type: "string" },
+            speaker: { type: "string" },
+          },
+          required: ["start", "end", "text"],
+        },
+      },
+      quiz_explanations: {
+        type: "array",
+        minItems: counts.quizExplanations,
+        maxItems: counts.quizExplanations,
+        items: { type: "string" },
+      },
+      info_sections: {
+        type: "array",
+        minItems: counts.infoSections,
+        maxItems: counts.infoSections,
+        items: {
+          type: "object",
+          properties: {
+            title:   { type: "string" },
+            summary: { type: "string" },
+            blocks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  type: { type: "string" },
+                },
+                required: ["type"],
+              },
+            },
+          },
+          required: ["title", "summary", "blocks"],
+        },
+      },
+      vocabulary: {
+        type: "array",
+        minItems: counts.vocabulary,
+        maxItems: counts.vocabulary,
+        items: {
+          type: "object",
+          properties: {
+            meaning: { type: "string" },
+            examples: { type: "array", items: { type: "string" } },
+          },
+          required: ["meaning", "examples"],
+        },
+      },
+    },
+    required: ["subtitles", "quiz_explanations", "info_sections", "vocabulary"],
+  };
+}
+
+// Legacy multi-locale schema — kept for reference while we migrate. New
+// Phase 3 code uses buildLocaleTranslationSchema above.
 function buildTranslationSchema(
   locales: string[],
   counts: {
@@ -545,6 +623,27 @@ the learner should read them (top-down on a mobile card). Always start with
 a short "paragraph" opener, then mix in structured blocks, then close with a
 "tip" / "warning" / "note".
 
+🚨 CRITICAL: Every block MUST include its content fields per the type. A
+block with ONLY a "type" field is an error — it will fail validation and
+the whole generation gets rejected. Specifically:
+  - paragraph      → MUST have "text"
+  - heading        → MUST have "text"
+  - bullet_list    → MUST have "items" (non-empty)
+  - numbered_list  → MUST have "items" (non-empty)
+  - table          → MUST have "headers" AND "rows"
+  - divider        → no extra fields
+  - tip/warning/note → MUST have "body" (title optional)
+  - video_quote    → MUST have "english" + "speaker"
+  - example        → MUST have "english"
+  - examples_group → MUST have "items" (each with "english")
+  - formula        → MUST have "formula"
+  - comparison     → MUST have "comparison_rows" (non-empty, each with label+example)
+  - common_mistake → MUST have "wrong" AND "correct"
+  - phrase         → MUST have "phrase" AND "meaning"
+
+The schema allows these as optional for technical reasons (it's too complex
+to enumerate per type), but the PROMPT treats them as mandatory.
+
 Text-flow blocks:
 
 { "type": "paragraph", "text": "..." }
@@ -684,6 +783,113 @@ from the parallel call).
       ]
     }
   ]
+}`;
+}
+
+// Per-locale translation prompt. One call, one target language — gives
+// Gemini focus for natural phrasing and keeps output small enough to
+// avoid MAX_TOKENS. Explicit translate/keep-EN rules per block type.
+function buildLocaleTranslationPrompt(args: {
+  locale: string;
+  level: string;
+  channelName: string;
+  speakerMapping: { id: string; role: string }[];
+  transcript: { segments: { start: number; end: number; text: string; speaker?: string }[] };
+  english: {
+    quizzes: { explanation_en: string }[];
+    info_sections: EnglishInfoSectionForTranslation[];
+    vocabulary: { word: string; meaning_en: string; examples_en: string[] }[];
+  };
+}): string {
+  const expectedSegCount = args.transcript.segments.length;
+  const expectedQuizCount = args.english.quizzes.length;
+  const expectedSectionCount = args.english.info_sections.length;
+  const expectedVocabCount = args.english.vocabulary.length;
+  const langName = LOCALE_NAMES[args.locale] || args.locale;
+
+  return `You are a professional translator + language-teaching editor for TikTalk, a ${args.level}-level English learning app. This is PHASE 3 — translate the English content below into **${langName}** (locale code: ${args.locale}).
+
+The target reader is a ${args.level} English learner whose native language is ${langName}. They want the explanation to feel as natural as if it were originally written in ${langName}, not a robotic word-for-word rendering.
+
+=== GLOBAL RULES ===
+1. NATURAL > literal. If a concept lands better with a local idiom or slight restructuring, do that.
+2. FORMALITY matches the scene: customer-to-staff in JA/KO should use polite forms; friends casual. Use ${langName}-native honorifics.
+3. Pedagogical clarity: the goal is for the learner to understand an English concept via their native language — always explain, never translate obscurely.
+4. NEVER translate English grammar tokens that are BEING TAUGHT. When the original text contains a list like "my, your, his, her" or "I, you, he, she, it, we, they" or a pattern like \`Subject + verb\` — KEEP THOSE TOKENS IN ENGLISH inside the translation. Example:
+   EN title:   "Possessive Adjectives: my, your, his, her"
+   ${args.locale} title: leave "my, your, his, her" exactly as is; only translate the lead label.
+5. Return EXACTLY ${expectedSegCount} subtitle segments, ${expectedQuizCount} quiz explanations, ${expectedSectionCount} info sections, ${expectedVocabCount} vocabulary entries. Same ORDER as English.
+
+=== KEEP-IN-ENGLISH FIELDS (do NOT translate these) ===
+- formula.formula                          → the pattern itself ("Subject + verb") is language-neutral
+- video_quote.english / .speaker / .timestamp_sec → original quote + metadata stay EN
+- example.english, examples_group.items[].english → original example sentence stays EN
+- comparison.comparison_rows[].label       → modal names / English particles stay EN
+- comparison.comparison_rows[].example     → the EN example stays EN
+- common_mistake.wrong / .correct          → both are English grammar forms being taught
+- phrase.phrase                            → headword stays EN
+- vocabulary.word (implicit — we only send you meaning + examples to translate)
+
+=== FIELDS YOU TRANSLATE (per block type) ===
+Produce a blocks array mirroring the English one 1:1 (same length, same types, same order). For each block, include ONLY the keys listed below; do NOT include keep-in-English fields.
+
+- paragraph:     { type, text }
+- heading:       { type, text }
+- bullet_list:   { type, items: [{text}] }           — same item count
+- numbered_list: { type, items: [{text}] }           — same item count
+- table:         { type, headers: [...], rows: [[...]] }  — same dimensions
+- divider:       { type }                            — no translatable content
+- tip|warning|note: { type, title?, body }
+- video_quote:   { type, translation }               — only the native-language rendering
+- example:       { type, translation, note? }
+- examples_group: { type, title?, items: [{ translation, note? }] }
+- formula:       { type, explanation? }              — only the explanation, NOT the formula
+- comparison:    { type, title?, comparison_rows: [{ example_translation, nuance? }] }  — per row
+- common_mistake: { type, note? }                    — only the optional note
+- phrase:        { type, meaning, usage? }
+
+Unknown block types → { type, text } with a best-effort translation.
+
+=== CONTEXT ===
+Channel: ${args.channelName}
+Level: ${args.level}
+Speakers: ${args.speakerMapping.map((s) => `${s.id}=${s.role}`).join(", ") || "unknown"}
+
+=== ENGLISH SUBTITLE SEGMENTS ===
+${JSON.stringify(args.transcript.segments)}
+
+=== ENGLISH QUIZ EXPLANATIONS ===
+${args.english.quizzes.map((q, i) => `Quiz ${i + 1}: ${q.explanation_en}`).join("\n")}
+
+=== ENGLISH INFO SECTIONS (structured blocks) ===
+${JSON.stringify(args.english.info_sections, null, 2)}
+
+=== ENGLISH VOCABULARY ===
+${args.english.vocabulary.map((v, i) => `Vocab ${i + 1}: word="${v.word}"\n  meaning: ${v.meaning_en}\n  examples: ${v.examples_en.map((e) => `"${e}"`).join(" | ")}`).join("\n\n")}
+
+=== TASK ===
+Translate everything into **${langName}** following the rules above.
+
+=== OUTPUT FORMAT ===
+Return raw JSON (no markdown, no code blocks). The top-level object is the single locale's data directly — NO outer "translations" wrapper:
+
+{
+  "subtitles": [{"start": 1.64, "end": 3.34, "text": "...", "speaker": "Speaker 0"}],
+  "quiz_explanations": ["...", "...", "..."],
+  "info_sections": [
+    {
+      "title": "...",
+      "summary": "...",
+      "blocks": [
+        { "type": "paragraph", "text": "..." },
+        { "type": "formula", "explanation": "..." },
+        { "type": "video_quote", "translation": "..." },
+        { "type": "examples_group", "items": [{ "translation": "..." }] },
+        { "type": "tip", "title": "...", "body": "..." }
+      ]
+    }
+  ],
+  "vocabulary": [{"meaning": "...", "examples": ["...", "..."]}]
 }`;
 }
 
@@ -831,6 +1037,77 @@ function sanitizeSlug(raw: string): string {
     .replace(/^-|-$/g, "");
 }
 
+// Per-type required-content check. Gemini's schema can't enforce this
+// (listing all block fields triggers "too many states for serving"), so
+// we enforce in code. Returns null if the block has the minimum content
+// fields its type needs; otherwise an error string for the caller to
+// surface / retry on.
+function validateBlockContent(b: Record<string, unknown>, idx: number): string | null {
+  const t = b.type as string;
+  const missing: string[] = [];
+  const nonEmptyStr = (v: unknown) => typeof v === "string" && v.trim() !== "";
+  const nonEmptyArr = (v: unknown) => Array.isArray(v) && v.length > 0;
+  switch (t) {
+    case "paragraph":
+    case "heading":
+      if (!nonEmptyStr(b.text)) missing.push("text");
+      break;
+    case "bullet_list":
+    case "numbered_list":
+      if (!nonEmptyArr(b.items)) missing.push("items");
+      break;
+    case "table":
+      if (!nonEmptyArr(b.headers)) missing.push("headers");
+      if (!nonEmptyArr(b.rows)) missing.push("rows");
+      break;
+    case "divider":
+      break;
+    case "tip":
+    case "warning":
+    case "note":
+      if (!nonEmptyStr(b.body)) missing.push("body");
+      break;
+    case "video_quote":
+      if (!nonEmptyStr(b.english)) missing.push("english");
+      if (!nonEmptyStr(b.speaker)) missing.push("speaker");
+      break;
+    case "example":
+      if (!nonEmptyStr(b.english)) missing.push("english");
+      break;
+    case "examples_group":
+      if (!nonEmptyArr(b.items)) missing.push("items");
+      else {
+        const items = b.items as Record<string, unknown>[];
+        const bad = items.findIndex((it) => !nonEmptyStr(it.english));
+        if (bad >= 0) missing.push(`items[${bad}].english`);
+      }
+      break;
+    case "formula":
+      if (!nonEmptyStr(b.formula)) missing.push("formula");
+      break;
+    case "comparison":
+      if (!nonEmptyArr(b.comparison_rows)) missing.push("comparison_rows");
+      else {
+        const rows = b.comparison_rows as Record<string, unknown>[];
+        const bad = rows.findIndex((r) => !nonEmptyStr(r.label) || !nonEmptyStr(r.example));
+        if (bad >= 0) missing.push(`comparison_rows[${bad}].label|example`);
+      }
+      break;
+    case "common_mistake":
+      if (!nonEmptyStr(b.wrong)) missing.push("wrong");
+      if (!nonEmptyStr(b.correct)) missing.push("correct");
+      break;
+    case "phrase":
+      if (!nonEmptyStr(b.phrase)) missing.push("phrase");
+      if (!nonEmptyStr(b.meaning)) missing.push("meaning");
+      break;
+  }
+  if (missing.length > 0) {
+    return `block[${idx}] type="${t}" missing required field(s): ${missing.join(", ")}`;
+  }
+  return null;
+}
+
 function validateEnglish(
   result: Record<string, unknown>,
   tpIds: string[]
@@ -865,6 +1142,8 @@ function validateEnglish(
       if (!b || typeof b.type !== "string" || !VALID_BLOCK_TYPES.includes(b.type)) {
         return `Info section block[${bi}] has invalid type: ${b?.type}`;
       }
+      const contentErr = validateBlockContent(b, bi);
+      if (contentErr) return `Section "${sec.title_en}" ${contentErr}`;
     }
     if (sec.teaching_point_id && !tpIds.includes(sec.teaching_point_id as string)) {
       return `Info section references unknown teaching_point_id: ${sec.teaching_point_id}`;
@@ -1171,8 +1450,53 @@ export async function POST(req: NextRequest) {
     transcript,
     speakerMapping,
   };
+  // Phase 2a: metadata. Small output, rarely needs retry. One attempt + fail.
+  // Phase 2b: sections (blocks). Prone to Gemini emitting blocks with only
+  //   `type` (schema is loose on purpose — listing all per-type fields
+  //   triggers "too many states for serving"). Wrap in a validation-retry
+  //   loop: if any block is missing its required content, feed the error
+  //   back into the prompt and try again (max 2 extra attempts).
+  const runSections = async (): Promise<EnglishSectionsResponse> => {
+    let lastErr = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const feedback = lastErr
+        ? `\n\nIMPORTANT — PREVIOUS ATTEMPT FAILED VALIDATION:\n${lastErr}\nFix all blocks: fill every required content field per the block-vocabulary rules. Do not emit blocks with only a "type" field.`
+        : "";
+      const { data } = await callGemini<EnglishSectionsResponse>({
+        prompt: buildEnglishSectionsPrompt(phase2Args) + feedback,
+        temperature: 0.6,
+        maxOutputTokens: 65536,
+        schema: ENGLISH_SECTIONS_SCHEMA,
+        thinkingBudget: 0,
+      });
+      // Validate per-block content.
+      const sections = data.info_sections || [];
+      const errors: string[] = [];
+      for (let si = 0; si < sections.length; si++) {
+        const sec = sections[si];
+        const blocks = Array.isArray(sec.blocks) ? sec.blocks : [];
+        for (let bi = 0; bi < blocks.length; bi++) {
+          const b = blocks[bi];
+          if (!b || typeof (b as Record<string, unknown>).type !== "string") {
+            errors.push(`section[${si}].block[${bi}] missing type`);
+            continue;
+          }
+          const err = validateBlockContent(b as Record<string, unknown>, bi);
+          if (err) errors.push(`section "${sec.title_en}" ${err}`);
+        }
+      }
+      if (errors.length === 0) return data;
+      lastErr = errors.slice(0, 6).join("; ");
+      await logPipeline(poolItemId, "content", "warn",
+        `Phase 2b attempt ${attempt + 1} failed validation — retrying`,
+        { errors: lastErr },
+      );
+    }
+    throw new Error(`Phase 2b: blocks missing content after 3 attempts (${lastErr})`);
+  };
+
   try {
-    const [metaRes, sectionsRes] = await Promise.all([
+    const [metaRes, sectionsData] = await Promise.all([
       callGemini<EnglishMetaResponse>({
         prompt: buildEnglishMetaPrompt(phase2Args),
         temperature: 0.6,
@@ -1180,15 +1504,9 @@ export async function POST(req: NextRequest) {
         schema: ENGLISH_META_SCHEMA,
         thinkingBudget: 0,
       }),
-      callGemini<EnglishSectionsResponse>({
-        prompt: buildEnglishSectionsPrompt(phase2Args),
-        temperature: 0.6,
-        maxOutputTokens: 65536,
-        schema: ENGLISH_SECTIONS_SCHEMA,
-        thinkingBudget: 0,
-      }),
+      runSections(),
     ]);
-    english = { ...metaRes.data, ...sectionsRes.data } as EnglishContent;
+    english = { ...metaRes.data, ...sectionsData } as EnglishContent;
     await logPipeline(poolItemId, "content", "info", "Phase 2 finished", {
       duration_ms: Date.now() - phase2Start,
       quizzes: english.quizzes?.length,
@@ -1214,8 +1532,14 @@ export async function POST(req: NextRequest) {
   english.slug = sanitizeSlug(english.slug) || `video-${Date.now().toString(36)}`;
 
   // ═══════════════════════════════════════════════════════════════
-  // PHASE 3 — PARALLEL TRANSLATIONS (4 batches × 3 locales)
+  // PHASE 3 — PARALLEL TRANSLATIONS (12 per-locale calls, each with retry)
   // ═══════════════════════════════════════════════════════════════
+  //
+  // One call per locale beats 4x3-locale batches for two reasons:
+  //   1) Gemini's attention stays on one language → more natural phrasing.
+  //   2) Output size per call is 1/3 — drops MAX_TOKENS risk to near zero.
+  //   3) A locale that fails retries in isolation; the other 11 keep their
+  //      results. allSettled pattern instead of all-or-nothing.
 
   type TranslatedBlock = Record<string, unknown>;
   type TranslatedInfoSection = {
@@ -1229,120 +1553,155 @@ export async function POST(req: NextRequest) {
     info_sections: TranslatedInfoSection[];
     vocabulary: { meaning: string; examples: string[] }[];
   };
-  type TranslationBatchResponse = {
-    translations: Record<string, TranslationEntry>;
-  };
 
   const expectedSegCount = transcript.segments?.length || 0;
   const expectedQuizCount = english.quizzes.length;
   const expectedSectionCount = english.info_sections.length;
   const expectedVocabCount = english.vocabulary.length;
 
-  await logPipeline(poolItemId, "content", "info", "Phase 3 (translations) started — 4 parallel batches");
+  await logPipeline(poolItemId, "content", "info",
+    "Phase 3 (translations) started — 12 parallel per-locale calls");
   const phase3Start = Date.now();
 
-  const translationPromises = TRANSLATION_BATCHES.map(async (batchLocales) => {
-    const batchStart = Date.now();
-    const { data: batchResult } = await callGemini<TranslationBatchResponse>({
-      prompt: buildTranslationPrompt({
-        locales: batchLocales,
-        level: item.level,
-        channelName: item.channel_name,
-        speakerMapping,
-        transcript,
-        english: {
-          quizzes: english.quizzes.map((q) => ({ explanation_en: q.explanation_en })),
-          info_sections: english.info_sections.map((s) => ({
-            title: s.title_en,
-            summary: s.summary_en,
-            blocks: s.blocks,
-          })),
-          vocabulary: english.vocabulary.map((v) => ({
-            word: v.word,
-            meaning_en: v.meaning_en,
-            examples_en: v.examples_en,
-          })),
-        },
-      }),
-      temperature: 0.3,
-      maxOutputTokens: 65536,
-      schema: buildTranslationSchema(batchLocales, {
-        subtitles: expectedSegCount,
-        quizExplanations: expectedQuizCount,
-        infoSections: expectedSectionCount,
-        vocabulary: expectedVocabCount,
-      }),
-    });
+  const sharedTranslationEnglish = {
+    quizzes: english.quizzes.map((q) => ({ explanation_en: q.explanation_en })),
+    info_sections: english.info_sections.map((s) => ({
+      title: s.title_en,
+      summary: s.summary_en,
+      blocks: s.blocks,
+    })),
+    vocabulary: english.vocabulary.map((v) => ({
+      word: v.word,
+      meaning_en: v.meaning_en,
+      examples_en: v.examples_en,
+    })),
+  };
 
-    // Gemini still occasionally ignores minItems/maxItems on nested arrays
-    // and returns one extra entry. Trim any over-count before validation so
-    // a single-locale drift doesn't torpedo the whole batch.
-    if (batchResult?.translations) {
-      for (const loc of batchLocales) {
-        const entry = batchResult.translations[loc];
-        if (!entry) continue;
-        if (Array.isArray(entry.subtitles) && entry.subtitles.length > expectedSegCount) {
-          entry.subtitles.length = expectedSegCount;
-        }
-        if (Array.isArray(entry.quiz_explanations) && entry.quiz_explanations.length > expectedQuizCount) {
-          entry.quiz_explanations.length = expectedQuizCount;
-        }
-        if (Array.isArray(entry.info_sections) && entry.info_sections.length > expectedSectionCount) {
-          entry.info_sections.length = expectedSectionCount;
-        }
-        if (Array.isArray(entry.vocabulary) && entry.vocabulary.length > expectedVocabCount) {
-          entry.vocabulary.length = expectedVocabCount;
-        }
+  // trimEntry: belt for nested-array drift Gemini sometimes does. Over-
+  // count → truncate to expected; under-count → caller's validator fails.
+  const trimEntry = (entry: TranslationEntry | undefined) => {
+    if (!entry) return;
+    if (Array.isArray(entry.subtitles) && entry.subtitles.length > expectedSegCount) {
+      entry.subtitles.length = expectedSegCount;
+    }
+    if (Array.isArray(entry.quiz_explanations) && entry.quiz_explanations.length > expectedQuizCount) {
+      entry.quiz_explanations.length = expectedQuizCount;
+    }
+    if (Array.isArray(entry.info_sections) && entry.info_sections.length > expectedSectionCount) {
+      entry.info_sections.length = expectedSectionCount;
+    }
+    if (Array.isArray(entry.vocabulary) && entry.vocabulary.length > expectedVocabCount) {
+      entry.vocabulary.length = expectedVocabCount;
+    }
+  };
+
+  // validateLocaleEntry: single-locale shape check. Returns null on success,
+  // error string otherwise — used to gate retry.
+  const validateLocaleEntry = (entry: TranslationEntry | undefined): string | null => {
+    if (!entry) return "missing locale payload";
+    if (!Array.isArray(entry.subtitles) || entry.subtitles.length !== expectedSegCount) {
+      return `expected ${expectedSegCount} subtitle segments, got ${entry.subtitles?.length ?? 0}`;
+    }
+    for (const seg of entry.subtitles) {
+      if (typeof seg.start !== "number" || typeof seg.end !== "number" || typeof seg.text !== "string") {
+        return "subtitle missing start/end/text";
       }
     }
+    if (!Array.isArray(entry.quiz_explanations) || entry.quiz_explanations.length !== expectedQuizCount) {
+      return `expected ${expectedQuizCount} quiz_explanations, got ${entry.quiz_explanations?.length ?? 0}`;
+    }
+    if (!Array.isArray(entry.info_sections) || entry.info_sections.length !== expectedSectionCount) {
+      return `expected ${expectedSectionCount} info_sections, got ${entry.info_sections?.length ?? 0}`;
+    }
+    for (const s of entry.info_sections) {
+      if (typeof s.title !== "string" || !s.title) return "info section missing title";
+      if (typeof s.summary !== "string") return "info section missing summary";
+      if (!Array.isArray(s.blocks)) return "info section missing blocks";
+    }
+    if (!Array.isArray(entry.vocabulary) || entry.vocabulary.length !== expectedVocabCount) {
+      return `expected ${expectedVocabCount} vocabulary, got ${entry.vocabulary?.length ?? 0}`;
+    }
+    for (const v of entry.vocabulary) {
+      if (typeof v.meaning !== "string" || !v.meaning) return "vocabulary missing meaning";
+      if (!Array.isArray(v.examples)) return "vocabulary missing examples";
+    }
+    return null;
+  };
 
-    const validationErr = validateTranslationBatch(
-      batchResult as unknown as Record<string, unknown>,
-      batchLocales,
-      expectedSegCount,
-      expectedQuizCount,
-      expectedSectionCount,
-      expectedVocabCount
-    );
-    if (validationErr) {
-      await logPipeline(poolItemId, "content", "error", `Translation batch validation failed`, {
-        locales: batchLocales,
-        error: validationErr,
+  const translateOneLocale = async (locale: string): Promise<TranslationEntry> => {
+    const start = Date.now();
+    let lastErr = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const feedback = lastErr
+        ? `\n\nIMPORTANT — PREVIOUS ATTEMPT FAILED VALIDATION:\n${lastErr}\nFix the count/shape mismatch while keeping translations natural.`
+        : "";
+      const { data } = await callGemini<TranslationEntry>({
+        prompt: buildLocaleTranslationPrompt({
+          locale,
+          level: item.level,
+          channelName: item.channel_name,
+          speakerMapping,
+          transcript,
+          english: sharedTranslationEnglish,
+        }) + feedback,
+        temperature: 0.3,
+        maxOutputTokens: 32768,
+        schema: buildLocaleTranslationSchema({
+          subtitles: expectedSegCount,
+          quizExplanations: expectedQuizCount,
+          infoSections: expectedSectionCount,
+          vocabulary: expectedVocabCount,
+        }),
+        thinkingBudget: 0,
       });
-      throw new Error(`Batch ${batchLocales.join(",")}: ${validationErr}`);
+      trimEntry(data);
+      const err = validateLocaleEntry(data);
+      if (!err) {
+        await logPipeline(poolItemId, "content", "info", `Translation finished [${locale}]`, {
+          duration_ms: Date.now() - start,
+          attempt: attempt + 1,
+        });
+        return data;
+      }
+      lastErr = err;
+      await logPipeline(poolItemId, "content", "warn",
+        `Translation [${locale}] attempt ${attempt + 1} failed — retrying`,
+        { error: err },
+      );
     }
+    throw new Error(`${locale}: ${lastErr}`);
+  };
 
-    await logPipeline(poolItemId, "content", "info", `Translation batch finished`, {
-      locales: batchLocales,
-      duration_ms: Date.now() - batchStart,
+  // allSettled so a single-locale failure doesn't lose the other 11.
+  const results = await Promise.allSettled(LOCALES.map((loc) => translateOneLocale(loc)));
+  const allTranslations: Record<string, TranslationEntry> = {};
+  const failedLocales: string[] = [];
+  for (let i = 0; i < LOCALES.length; i++) {
+    const loc = LOCALES[i];
+    const r = results[i];
+    if (r.status === "fulfilled") {
+      allTranslations[loc] = r.value;
+    } else {
+      failedLocales.push(loc);
+      await logPipeline(poolItemId, "content", "error",
+        `Translation [${loc}] failed permanently`,
+        { error: r.reason instanceof Error ? r.reason.message : String(r.reason) },
+      );
+    }
+  }
+
+  if (failedLocales.length > 0) {
+    const msg = `Phase 3: ${failedLocales.length}/${LOCALES.length} locales failed: ${failedLocales.join(", ")}`;
+    await logPipeline(poolItemId, "content", "error", msg, {
+      duration_ms: Date.now() - phase3Start,
     });
-    return batchResult.translations;
+    await markFailed(poolItemId, msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+
+  await logPipeline(poolItemId, "content", "info", "Phase 3 finished (all 12 locales)", {
+    duration_ms: Date.now() - phase3Start,
   });
-
-  let allTranslations: Record<string, TranslationEntry> = {};
-  try {
-    const batches = await Promise.all(translationPromises);
-    for (const batch of batches) {
-      allTranslations = { ...allTranslations, ...batch };
-    }
-    await logPipeline(poolItemId, "content", "info", "Phase 3 finished (all 12 locales)", {
-      duration_ms: Date.now() - phase3Start,
-    });
-  } catch (err) {
-    await logPipeline(poolItemId, "content", "error", `Phase 3 failed: ${(err as Error).message}`, {
-      duration_ms: Date.now() - phase3Start,
-    });
-    await markFailed(poolItemId, `Phase 3 (translation) failed: ${(err as Error).message}`);
-    return NextResponse.json({ error: `Phase 3 failed: ${(err as Error).message}` }, { status: 500 });
-  }
-
-  // Sanity check: all 12 locales present
-  for (const loc of LOCALES) {
-    if (!allTranslations[loc]) {
-      await markFailed(poolItemId, `Translation missing for locale: ${loc}`);
-      return NextResponse.json({ error: `Translation missing for locale: ${loc}` }, { status: 500 });
-    }
-  }
 
   // ═══════════════════════════════════════════════════════════════
   // ASSEMBLE JSONB BLOBS (subtitles / questions / info)
