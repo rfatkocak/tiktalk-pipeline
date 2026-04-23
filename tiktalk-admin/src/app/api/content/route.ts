@@ -180,15 +180,35 @@ const ENGLISH_SECTIONS_SCHEMA = {
           summary_en: { type: "string" },
           grammar_label: { type: "string" },
           blocks: {
-            // Discriminated-union shape too complex for Gemini's JSON schema
-            // validator when fully described. Only require the `type`
-            // discriminator; prompt explains the valid per-type fields and
-            // validateEnglish enforces presence in code.
+            // Fully-required discriminated union triggers "too many states
+            // for serving" in Gemini's schema validator. Compromise: list
+            // the possible fields as PROPERTIES (hints so Gemini fills
+            // them) but require only the `type` discriminator. Content
+            // correctness is enforced in code by validateBlockContent.
             type: "array",
             items: {
               type: "object",
               properties: {
-                type: { type: "string" },
+                type:            { type: "string" },
+                text:            { type: "string" },
+                level:           { type: "integer" },
+                items:           { type: "array" },
+                headers:         { type: "array" },
+                rows:            { type: "array" },
+                comparison_rows: { type: "array" },
+                title:           { type: "string" },
+                body:            { type: "string" },
+                english:         { type: "string" },
+                speaker:         { type: "string" },
+                timestamp_sec:   { type: "number" },
+                note:            { type: "string" },
+                formula:         { type: "string" },
+                explanation:     { type: "string" },
+                wrong:           { type: "string" },
+                correct:         { type: "string" },
+                phrase:          { type: "string" },
+                meaning:         { type: "string" },
+                usage:           { type: "string" },
               },
               required: ["type"],
             },
@@ -1476,12 +1496,21 @@ export async function POST(req: NextRequest) {
         const sec = sections[si];
         const blocks = Array.isArray(sec.blocks) ? sec.blocks : [];
         for (let bi = 0; bi < blocks.length; bi++) {
-          const b = blocks[bi];
-          if (!b || typeof (b as Record<string, unknown>).type !== "string") {
+          const b = blocks[bi] as Record<string, unknown> | undefined;
+          if (!b || typeof b.type !== "string") {
             errors.push(`section[${si}].block[${bi}] missing type`);
             continue;
           }
-          const err = validateBlockContent(b as Record<string, unknown>, bi);
+          // Trim type (Gemini sometimes emits "paragraph', " with trailing
+          // garbage — normalize before validation so the retry prompt
+          // complaint is accurate).
+          const rawType = b.type.trim().replace(/[,'"\s]+$/g, "");
+          b.type = rawType;
+          if (!VALID_BLOCK_TYPES.includes(rawType)) {
+            errors.push(`section[${si}].block[${bi}] unknown type: "${b.type}"`);
+            continue;
+          }
+          const err = validateBlockContent(b, bi);
           if (err) errors.push(`section "${sec.title_en}" ${err}`);
         }
       }
