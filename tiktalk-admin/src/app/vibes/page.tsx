@@ -4,7 +4,11 @@ import { VibeList } from "./vibe-list";
 export const dynamic = "force-dynamic";
 
 export default async function VibesPage() {
-  const res = await query("SELECT * FROM vibes ORDER BY created_at DESC");
+  const res = await query(
+    `SELECT id, slug, name, description, prompt_hint, group_name, created_at
+     FROM vibes
+     ORDER BY COALESCE(group_name, 'zzz') ASC, name ASC`
+  );
 
   return (
     <div>
