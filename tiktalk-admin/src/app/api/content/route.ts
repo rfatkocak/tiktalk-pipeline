@@ -1487,7 +1487,6 @@ export async function POST(req: NextRequest) {
         temperature: 0.6,
         maxOutputTokens: 65536,
         schema: ENGLISH_SECTIONS_SCHEMA,
-        thinkingBudget: 0,
       });
       // Validate per-block content.
       const sections = data.info_sections || [];
@@ -1531,7 +1530,6 @@ export async function POST(req: NextRequest) {
         temperature: 0.6,
         maxOutputTokens: 32768,
         schema: ENGLISH_META_SCHEMA,
-        thinkingBudget: 0,
       }),
       runSections(),
     ]);
@@ -1681,7 +1679,6 @@ export async function POST(req: NextRequest) {
           infoSections: expectedSectionCount,
           vocabulary: expectedVocabCount,
         }),
-        thinkingBudget: 0,
       });
       trimEntry(data);
       const err = validateLocaleEntry(data);
