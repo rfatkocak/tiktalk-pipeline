@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
-import { createPoolItem, deletePoolItem, toggleLessonStatus } from "./actions";
+import { createPoolItem, deletePoolItem, toggleLessonStatus, importPoolItems, type PoolImportResult } from "./actions";
 
 interface SelectOption {
   id: string;
@@ -102,6 +102,10 @@ export function PoolManager({
   }, [anyProcessing, router]);
 
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importResult, setImportResult] = useState<PoolImportResult | null>(null);
   const [selectedChannel, setSelectedChannel] = useState("");
   const [selectedLevel, setSelectedLevel] = useState("beginner");
   const [selectedVibes, setSelectedVibes] = useState<string[]>([]);
@@ -387,6 +391,35 @@ export function PoolManager({
     eligibleForSeedance.some((i) => i.id === id)
   );
 
+  async function runBulkImport() {
+    if (!importText.trim()) return;
+    setImportBusy(true);
+    setImportResult(null);
+    try {
+      const r = await importPoolItems(importText, window.location.origin);
+      setImportResult(r);
+      if (r.failed === 0 && r.created > 0) {
+        setImportText("");
+      }
+    } catch (err) {
+      setImportResult({
+        created: 0,
+        failed: 0,
+        errors: [(err as Error).message],
+      });
+    }
+    setImportBusy(false);
+  }
+
+  const importSampleJson = JSON.stringify(
+    [
+      { channel: "dailyenglish", level: "beginner", vibes: ["cozy", "realistic"] },
+      { channel: "officeenglish", level: "intermediate", vibes: ["minimalist"] },
+    ],
+    null,
+    2,
+  );
+
   return (
     <div>
       <div className="flex items-center gap-3 mb-4">
@@ -401,6 +434,13 @@ export function PoolManager({
           {showForm ? "Cancel" : "New Pool Item"}
         </button>
 
+        <button
+          onClick={() => setShowImport(!showImport)}
+          className="px-4 py-2 border border-zinc-200 text-zinc-700 text-sm rounded-md hover:bg-zinc-100 transition-colors"
+        >
+          {showImport ? "Close Import" : "Import JSON"}
+        </button>
+
         {selectedEligible.length > 0 && (
           <button
             onClick={() => startSeedance(selectedEligible)}
@@ -413,6 +453,51 @@ export function PoolManager({
           </button>
         )}
       </div>
+
+      {showImport && (
+        <div className="mb-6 bg-white border border-zinc-200 rounded-lg p-5 space-y-3">
+          <div className="text-xs text-zinc-500 leading-relaxed">
+            Paste a JSON array. Each item: <code>channel</code> (handle), <code>level</code>{" "}
+            (beginner|intermediate|advanced), <code>vibes</code> (slug array), optional{" "}
+            <code>notes</code>. Every item runs{" "}
+            <code>/api/generate</code> (LLM picks TPs + writes a seedance prompt) and lands in
+            the pool <b>without manual Save</b> — then you just hit <b>Start Seedance</b>.
+          </div>
+          <textarea
+            rows={12}
+            placeholder={importSampleJson}
+            value={importText}
+            onChange={(e) => setImportText(e.target.value)}
+            className="w-full px-3 py-2 border border-zinc-200 rounded-md text-xs font-mono focus:outline-none focus:ring-1 focus:ring-zinc-400"
+          />
+          <div className="flex items-center gap-3">
+            <button
+              onClick={runBulkImport}
+              disabled={importBusy || !importText.trim()}
+              className="px-4 py-2 bg-zinc-900 text-white text-sm rounded-md hover:bg-zinc-800 transition-colors disabled:opacity-50"
+            >
+              {importBusy ? "Importing… (LLM calls take ~30s each)" : "Run Import"}
+            </button>
+            {importResult && (
+              <div className="text-xs">
+                <span className="text-green-600 font-medium">
+                  +{importResult.created} created
+                </span>
+                {importResult.failed > 0 && (
+                  <span className="text-red-600 ml-2">· {importResult.failed} failed</span>
+                )}
+                {importResult.errors.length > 0 && (
+                  <div className="mt-2 text-red-600 max-h-32 overflow-y-auto">
+                    {importResult.errors.slice(0, 10).map((e, i) => (
+                      <div key={i}>• {e}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {showForm && (
         <div className="mb-6 bg-white border border-zinc-200 rounded-lg p-5 space-y-4">
