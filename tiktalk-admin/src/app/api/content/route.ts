@@ -180,35 +180,56 @@ const ENGLISH_SECTIONS_SCHEMA = {
           summary_en: { type: "string" },
           grammar_label: { type: "string" },
           blocks: {
-            // Fully-required discriminated union triggers "too many states
-            // for serving" in Gemini's schema validator. Compromise: list
-            // the possible fields as PROPERTIES (hints so Gemini fills
-            // them) but require only the `type` discriminator. Content
-            // correctness is enforced in code by validateBlockContent.
+            // OpenAI strict-mode schema handles discriminated unions
+            // cleanly. Every property listed; only `type` required.
+            // Content correctness enforced in code by validateBlockContent.
             type: "array",
             items: {
               type: "object",
               properties: {
-                type:            { type: "string" },
-                text:            { type: "string" },
-                level:           { type: "integer" },
-                items:           { type: "array" },
-                headers:         { type: "array" },
-                rows:            { type: "array" },
-                comparison_rows: { type: "array" },
-                title:           { type: "string" },
-                body:            { type: "string" },
-                english:         { type: "string" },
-                speaker:         { type: "string" },
-                timestamp_sec:   { type: "number" },
-                note:            { type: "string" },
-                formula:         { type: "string" },
-                explanation:     { type: "string" },
-                wrong:           { type: "string" },
-                correct:         { type: "string" },
-                phrase:          { type: "string" },
-                meaning:         { type: "string" },
-                usage:           { type: "string" },
+                type:          { type: "string" },
+                text:          { type: "string" },
+                level:         { type: "integer" },
+                items: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      text:    { type: "string" },
+                      english: { type: "string" },
+                      note:    { type: "string" },
+                    },
+                  },
+                },
+                headers: { type: "array", items: { type: "string" } },
+                rows: {
+                  type: "array",
+                  items: { type: "array", items: { type: "string" } },
+                },
+                comparison_rows: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      label:   { type: "string" },
+                      example: { type: "string" },
+                      nuance:  { type: "string" },
+                    },
+                  },
+                },
+                title:         { type: "string" },
+                body:          { type: "string" },
+                english:       { type: "string" },
+                speaker:       { type: "string" },
+                timestamp_sec: { type: "number" },
+                note:          { type: "string" },
+                formula:       { type: "string" },
+                explanation:   { type: "string" },
+                wrong:         { type: "string" },
+                correct:       { type: "string" },
+                phrase:        { type: "string" },
+                meaning:       { type: "string" },
+                usage:         { type: "string" },
               },
               required: ["type"],
             },
@@ -273,8 +294,45 @@ function buildLocaleTranslationSchema(counts: {
               type: "array",
               items: {
                 type: "object",
+                // OpenAI strict mode treats every listed property as required,
+                // so list all the translatable fields. Per-type rules in the
+                // prompt tell the model which to fill and which to leave "".
                 properties: {
-                  type: { type: "string" },
+                  type:        { type: "string" },
+                  text:        { type: "string" },
+                  title:       { type: "string" },
+                  body:        { type: "string" },
+                  translation: { type: "string" },
+                  note:        { type: "string" },
+                  explanation: { type: "string" },
+                  meaning:     { type: "string" },
+                  usage:       { type: "string" },
+                  items: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        text:        { type: "string" },
+                        translation: { type: "string" },
+                        note:        { type: "string" },
+                      },
+                    },
+                  },
+                  headers: { type: "array", items: { type: "string" } },
+                  rows: {
+                    type: "array",
+                    items: { type: "array", items: { type: "string" } },
+                  },
+                  comparison_rows: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        example_translation: { type: "string" },
+                        nuance:              { type: "string" },
+                      },
+                    },
+                  },
                 },
                 required: ["type"],
               },
