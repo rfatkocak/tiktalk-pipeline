@@ -39,6 +39,10 @@ const OUTPUT_FILE = path.join(OUTPUT_DIR, "evp-vocab.json");
 
 const PAGE_URL = `https://englishprofile.org/?menu=evp-online&dict=${DICT}`;
 const SEARCH_ENDPOINT = "/elasticsearch/search";
+// --debug: dump the first 3 search responses raw so we can see the
+// envelope shape if items aren't being detected.
+const DEBUG = process.argv.includes("--debug");
+const DEBUG_FILE = path.join(OUTPUT_DIR, "evp-debug-sample.json");
 
 // Stop after this many consecutive scroll attempts that don't bring any
 // new items. Bumped so a slow network burst can't end the run early.
@@ -74,10 +78,48 @@ async function main() {
 
   const page = ctx.pages()[0] || (await ctx.newPage());
 
+  // Walk an arbitrary JSON tree and collect every object that looks
+  // like an EVP entry (has id_text + cefr_text_text). Bubble nests
+  // results under different envelope keys depending on the operation,
+  // so a recursive walk beats hard-coding paths.
+  const collectFromAny = (node, addedRef) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      for (const item of node) collectFromAny(item, addedRef);
+      return;
+    }
+    if (typeof node !== "object") return;
+    const src = node._source || node;
+    if (src && typeof src.id_text === "string" && (src.hw_text || src.base_text)) {
+      if (!collected.has(src.id_text)) {
+        collected.set(src.id_text, {
+          id: src.id_text,
+          ref_id: src.refid_text || null,
+          word: src.hw_text || null,
+          base: src.base_text || null,
+          pos: src.pos_text || null,
+          cefr: src.cefr_text_text || null,
+          definition: src.definition_text || null,
+          examples: splitSemicolon(src.learnerexamples_text),
+          search_terms: splitSemicolon(src.searchterms_text),
+        });
+        addedRef.n++;
+      }
+    }
+    for (const v of Object.values(node)) collectFromAny(v, addedRef);
+  };
+
   let netHits = 0;
+  let debugDumpsLeft = DEBUG ? 3 : 0;
   page.on("response", async (response) => {
     const url = response.url();
-    if (!url.includes(SEARCH_ENDPOINT)) return;
+    // Capture EVERY POST under englishprofile.org while debugging so
+    // we can see if items come from a different endpoint.
+    const isInteresting =
+      url.includes(SEARCH_ENDPOINT) ||
+      (DEBUG && url.includes("englishprofile.org"));
+    if (!isInteresting) return;
+
     let body;
     try {
       body = await response.text();
@@ -88,38 +130,30 @@ async function main() {
     try {
       json = JSON.parse(body);
     } catch {
-      // Possibly gzipped — playwright should decompress; this branch
-      // means the response wasn't JSON. Skip.
+      if (DEBUG) console.log(`[debug] non-JSON response: ${url} (${body.length} bytes)`);
       return;
     }
-    // Hits live in either `response.results` (elasticsearch passthrough)
-    // or `hits.hits` (real ES). Walk both paths defensively.
-    const hits =
-      (Array.isArray(json?.response?.results) && json.response.results) ||
-      (Array.isArray(json?.results) && json.results) ||
-      (Array.isArray(json?.hits?.hits) && json.hits.hits) ||
-      [];
+
     netHits++;
-    let added = 0;
-    for (const h of hits) {
-      const src = h?._source || h;
-      if (!src?.id_text) continue;
-      if (collected.has(src.id_text)) continue;
-      collected.set(src.id_text, {
-        id: src.id_text,
-        ref_id: src.refid_text || null,
-        word: src.hw_text || null,
-        base: src.base_text || null,
-        pos: src.pos_text || null,
-        cefr: src.cefr_text_text || null,
-        definition: src.definition_text || null,
-        examples: splitSemicolon(src.learnerexamples_text),
-        search_terms: splitSemicolon(src.searchterms_text),
-      });
-      added++;
+    if (debugDumpsLeft > 0) {
+      const dumpPath = path.join(
+        OUTPUT_DIR,
+        `evp-debug-${netHits}-${Date.now()}.json`,
+      );
+      fs.writeFileSync(
+        dumpPath,
+        JSON.stringify({ url, topLevelKeys: Object.keys(json), body: json }, null, 2),
+      );
+      console.log(`[debug] dumped raw response → ${path.basename(dumpPath)}`);
+      debugDumpsLeft--;
     }
-    if (added > 0) {
-      console.log(`[net #${netHits}] +${added} new (total: ${collected.size})`);
+
+    const addedRef = { n: 0 };
+    collectFromAny(json, addedRef);
+    if (addedRef.n > 0) {
+      console.log(`[net #${netHits}] +${addedRef.n} new (total: ${collected.size})`);
+    } else if (DEBUG) {
+      console.log(`[net #${netHits}] no entries found in ${url} — top keys: ${Object.keys(json).join(",")}`);
     }
   });
 
