@@ -168,11 +168,16 @@ async function main() {
   await page.goto(PAGE_URL, { waitUntil: "domcontentloaded", timeout: 90_000 });
 
   console.log("");
-  console.log("→ In the page: set Display = All, then set Levels = All.");
-  console.log("→ Wait until the list shows entries.");
-  console.log("→ Then press Enter here to start auto-scrolling.");
+  console.log("Per-level scraping mode:");
+  console.log("  1) In the page, set Display=All + Level=A1.");
+  console.log("  2) Wait for the list to start showing entries.");
+  console.log("  3) Press Enter here — auto-scroll runs until end.");
+  console.log("  4) Repeat with A2, B1, B2, C1, C2.");
+  console.log("  Ctrl+C when you've done all levels.");
   console.log("");
-  await new Promise((resolve) => process.stdin.once("data", resolve));
+
+  const waitForEnter = () =>
+    new Promise((resolve) => process.stdin.once("data", resolve));
 
   let lastSavedCount = collected.size;
   const saveAll = () => {
@@ -185,10 +190,22 @@ async function main() {
     console.log(`  💾 saved ${arr.length} entries`);
   };
 
-  let stalled = 0;
-  let lastCount = collected.size;
+  // Outer loop: each iteration is one filter-batch (e.g. Level=A1).
+  // User changes filter in browser, presses Enter, we scroll to end,
+  // then prompt for next batch.
+  let batchNum = 0;
+  while (true) {
+    batchNum++;
+    console.log(`\n→ Batch #${batchNum}: set the filter in the browser, then press Enter (Ctrl+C to finish).`);
+    await waitForEnter();
+    const startCount = collected.size;
+    const startTs = Date.now();
+    console.log(`Scrolling… (starting at ${startCount} total)`);
 
-  while (stalled < STALL_THRESHOLD) {
+    let stalled = 0;
+    let lastCount = collected.size;
+
+    while (stalled < STALL_THRESHOLD) {
     // Triple-trigger scroll: scrollTop on every scrollable container,
     // mouse wheel event (real-event listeners catch this), Page End key.
     await page.evaluate(() => {
@@ -231,12 +248,12 @@ async function main() {
     }
   }
 
-  saveAll();
-  console.log(`\n✅ Done. ${collected.size} entries → ${OUTPUT_FILE}`);
-  console.log("Close the browser window when ready (Ctrl+C exits).");
-
-  // Keep process alive so the browser stays open.
-  await new Promise(() => {});
+    // Inner scroll loop ended for this batch.
+    saveAll();
+    const added = collected.size - startCount;
+    const dur = ((Date.now() - startTs) / 1000).toFixed(1);
+    console.log(`\n✅ Batch #${batchNum} done — +${added} new in ${dur}s. Total: ${collected.size}`);
+  }
 }
 
 function splitSemicolon(s) {
