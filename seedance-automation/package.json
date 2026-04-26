@@ -5,6 +5,7 @@
   "scripts": {
     "start": "electron .",
     "login": "node login.js",
+    "scrape-evp": "node scrape-evp.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
