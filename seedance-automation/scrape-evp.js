@@ -44,10 +44,17 @@ const SEARCH_ENDPOINT = "/elasticsearch/search";
 const DEBUG = process.argv.includes("--debug");
 const DEBUG_FILE = path.join(OUTPUT_DIR, "evp-debug-sample.json");
 
-// Stop after this many consecutive scroll attempts that don't bring any
-// new items. Bumped so a slow network burst can't end the run early.
-const STALL_THRESHOLD = 10;
-const SCROLL_PAUSE_MS = 2000;
+// Stall handling. Two layers:
+//  - SOFT_STALL: every N stalled scrolls, kick the page hard (extra
+//    wheel + Page End + click on body to refocus). Bubble's lazy-load
+//    sometimes just needs a poke.
+//  - HARD_STALL: total stalled count → reload the page and re-press
+//    Enter for filters. Bubble's elasticsearch cursor can run out of
+//    juice mid-session; a reload re-issues from where the last
+//    response left off (and dedup keeps the earlier 11K safe).
+const STALL_THRESHOLD = 25;
+const SOFT_STALL_KICK_EVERY = 6;
+const SCROLL_PAUSE_MS = 3500;
 const SAVE_EVERY_N = 250;
 
 async function main() {
@@ -182,9 +189,8 @@ async function main() {
   let lastCount = collected.size;
 
   while (stalled < STALL_THRESHOLD) {
-    // Triple-trigger scroll. Bubble's repeating-group sometimes only
-    // loads more on actual wheel events, sometimes on scrollTop, and
-    // Page Down keypress is a third independent trigger.
+    // Triple-trigger scroll: scrollTop on every scrollable container,
+    // mouse wheel event (real-event listeners catch this), Page End key.
     await page.evaluate(() => {
       window.scrollTo(0, document.body.scrollHeight);
       const all = document.querySelectorAll("*");
@@ -194,20 +200,27 @@ async function main() {
         }
       }
     });
-    // Mouse wheel on the page body — synthesises a real wheel event
-    // that virtualised lists usually subscribe to.
-    try {
-      await page.mouse.wheel(0, 6000);
-    } catch { /* viewport not focused — ignore */ }
-    // Keyboard fallback.
-    try {
-      await page.keyboard.press("End");
-    } catch { /* not focused */ }
+    try { await page.mouse.wheel(0, 8000); } catch { /* not focused */ }
+    try { await page.keyboard.press("End"); } catch { /* not focused */ }
     await page.waitForTimeout(SCROLL_PAUSE_MS);
 
     if (collected.size === lastCount) {
       stalled++;
       console.log(`  ⏳ stalled ${stalled}/${STALL_THRESHOLD} (no new items)`);
+
+      // Hard kick at every Nth stall — multiple wheel events + click
+      // body to refocus the virtual list.
+      if (stalled > 0 && stalled % SOFT_STALL_KICK_EVERY === 0) {
+        console.log(`  ⚡ soft kick #${stalled / SOFT_STALL_KICK_EVERY}`);
+        try {
+          await page.evaluate(() => document.body.click());
+          for (let k = 0; k < 5; k++) {
+            await page.mouse.wheel(0, 12000);
+            await page.waitForTimeout(400);
+          }
+        } catch { /* ignore */ }
+        await page.waitForTimeout(2000);
+      }
     } else {
       stalled = 0;
       lastCount = collected.size;
