@@ -19,17 +19,31 @@ const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
 
+// CLI: --dict uk|us  (default uk).  EVP UK and US are separate
+// dictionaries (~9.5K + ~6K = ~15.6K total). Each ID carries the suffix
+// (_UK / _US), so running both into the same output file dedupes
+// naturally without colliding.
+const DICT = (() => {
+  const i = process.argv.indexOf("--dict");
+  if (i > 0 && process.argv[i + 1]) return process.argv[i + 1].toLowerCase();
+  return "uk";
+})();
+if (!["uk", "us"].includes(DICT)) {
+  console.error(`unknown --dict "${DICT}" (use uk or us)`);
+  process.exit(1);
+}
+
 const USER_DATA_DIR = path.join(__dirname, "browser-data-evp");
 const OUTPUT_DIR = path.join(__dirname, "data");
 const OUTPUT_FILE = path.join(OUTPUT_DIR, "evp-vocab.json");
 
-const PAGE_URL = "https://englishprofile.org/?menu=evp-online&dict=uk";
+const PAGE_URL = `https://englishprofile.org/?menu=evp-online&dict=${DICT}`;
 const SEARCH_ENDPOINT = "/elasticsearch/search";
 
 // Stop after this many consecutive scroll attempts that don't bring any
-// new items. EVP delivers in chunks of ~25-50 per scroll.
-const STALL_THRESHOLD = 6;
-const SCROLL_PAUSE_MS = 2200;
+// new items. Bumped so a slow network burst can't end the run early.
+const STALL_THRESHOLD = 10;
+const SCROLL_PAUSE_MS = 2000;
 const SAVE_EVERY_N = 250;
 
 async function main() {
@@ -134,12 +148,11 @@ async function main() {
   let lastCount = collected.size;
 
   while (stalled < STALL_THRESHOLD) {
-    // Scroll the main results container. Bubble apps usually use a
-    // single scrollable group — falling back to window.scrollTo
-    // covers both cases.
+    // Triple-trigger scroll. Bubble's repeating-group sometimes only
+    // loads more on actual wheel events, sometimes on scrollTop, and
+    // Page Down keypress is a third independent trigger.
     await page.evaluate(() => {
       window.scrollTo(0, document.body.scrollHeight);
-      // Also try every scrollable container in case Bubble nested it.
       const all = document.querySelectorAll("*");
       for (const el of all) {
         if (el.scrollHeight > el.clientHeight && el.scrollHeight > 1000) {
@@ -147,6 +160,15 @@ async function main() {
         }
       }
     });
+    // Mouse wheel on the page body — synthesises a real wheel event
+    // that virtualised lists usually subscribe to.
+    try {
+      await page.mouse.wheel(0, 6000);
+    } catch { /* viewport not focused — ignore */ }
+    // Keyboard fallback.
+    try {
+      await page.keyboard.press("End");
+    } catch { /* not focused */ }
     await page.waitForTimeout(SCROLL_PAUSE_MS);
 
     if (collected.size === lastCount) {

@@ -6,6 +6,7 @@
     "start": "electron .",
     "login": "node login.js",
     "scrape-evp": "node scrape-evp.js",
+    "scrape-evp-us": "node scrape-evp.js --dict us",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
